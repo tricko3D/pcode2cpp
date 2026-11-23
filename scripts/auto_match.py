@@ -219,8 +219,8 @@ class Store:
 
     def eligible(self, beam_width: int, max_per_machine: int) -> list:
         """Best-scored frontier, with reserved space for dataflow exploration."""
-        rows = [r for r in self.all() if not r["expanded"] and r["status"] not in
-                ("VC9_FAILED", "UNSAFE", "ERROR")]
+        rows = [r for r in self.all() if not r["expanded"] and r["snapshot"] is not None and
+                r["status"] not in ("VC9_FAILED", "UNSAFE", "ERROR")]
         rows.sort(key=lambda r: (r["rdiff"] if r["rdiff"] is not None else 10000,
                                  r["bdiff"] if r["bdiff"] is not None else 10000,
                                  r["generation"], r["id"]))
@@ -444,9 +444,11 @@ class Engine:
             if self.remaining() < 2:
                 break
             frontier = self.store.eligible(self.a.beam_width, self.a.machine_alternatives)
-            if not frontier:
+            pending = [r for r in self.store.all() if r["snapshot"] is None and r["status"] == "NEW"]
+            if not frontier and not pending:
                 break
-            print(f"\n=== Generation {iteration+1}: {len(frontier)} parents ===", flush=True)
+            print(f"\n=== Generation {iteration+1}: {len(frontier)} parents, "
+                  f"{len(pending)} uncompiled proposals ===", flush=True)
             created = []
             for row in frontier:
                 if self.remaining() < 2:
@@ -459,9 +461,10 @@ class Engine:
                 created.extend(self.sweep(row))
             # Snapshot the most promising discovered sources, reserving slots
             # for the dataflow family that has only inherited ranking so far.
-            fresh = [self.store.row(i) for i in dict.fromkeys(created)
-                     if self.store.row(i)["snapshot"] is None and
-                     self.store.row(i)["status"] == "NEW"]
+            # Also drain older NEW proposals. A compilation-limited run can
+            # create more than it evaluates; those must not be lost on resume.
+            fresh = [r for r in self.store.all() if r["snapshot"] is None and
+                     r["status"] == "NEW"]
             fresh.sort(key=lambda r: (r["rdiff"] if r["rdiff"] is not None else 10000,
                                       r["bdiff"] if r["bdiff"] is not None else 10000))
             special = [r for r in fresh if r["origin"].startswith("field:")]
