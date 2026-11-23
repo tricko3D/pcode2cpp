@@ -5,14 +5,30 @@
       "model": "local",
       "temperature": 0.2,
       "max_tokens": 8192,
-      "timeout_seconds": 1800
+      "timeout_seconds": 1800,
+      "extra_body": {
+        "response_format": {
+          "type": "json_object"
+        },
+        "chat_template_kwargs": {
+          "reasoning_effort": "minimal"
+        }
+      }
     },
     "inkling-small": {
       "url": "http://127.0.0.1:8080/v1/chat/completions",
       "model": "local",
       "temperature": 0.2,
       "max_tokens": 16384,
-      "timeout_seconds": 2400
+      "timeout_seconds": 2400,
+      "extra_body": {
+        "response_format": {
+          "type": "json_object"
+        },
+        "chat_template_kwargs": {
+          "reasoning_effort": "minimal"
+        }
+      }
     },
     "deepseek": {
       "url": "https://api.deepseek.com/chat/completions",
@@ -21,7 +37,11 @@
       "temperature": 0.2,
       "max_tokens": 8192,
       "timeout_seconds": 1200,
-      "extra_body": {"response_format": {"type": "json_object"}}
+      "extra_body": {
+        "response_format": {
+          "type": "json_object"
+        }
+      }
     }
   }
 }
