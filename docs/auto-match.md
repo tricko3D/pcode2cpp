@@ -109,3 +109,44 @@ Offline tests:
 ```bash
 python -m unittest tests.test_auto_match -v
 ```
+
+
+## Search scheduling after the first live run
+
+The initial 2,000-compile experiment reached a 57-byte formally equivalent
+candidate, but spent the second-generation budget sweeping several equivalent
+machine-code candidates before compiling cross-family rewrites. The controller
+now prioritizes field-dependency rewrites derived from *each newly discovered
+C2Scope variant*, not just from already-expanded parents. It evaluates pending
+candidates between parent sweeps, uses at most three sweeps per generation,
+reserves compile budget for candidate evaluation, and defaults to 160 variants
+per sweep rather than 500. Exact-machine duplicates are not expensive sweep
+parents by default (`--machine-alternatives 1`), but their C++ can still
+contribute field-dependency expressions.
+
+**Existing SQLite state is reused.** On startup the search backfills
+field-dependency combinations from previously compiled variants, including
+variants whose C2Scope sweeps were already marked complete. These new
+combinations are compiled before additional sweeps. Increasing the total
+budget does not reset past compile costs or overwrite proofs:
+
+```bash
+cd ~/pcode2cpp
+git pull --ff-only
+python -m unittest tests.test_auto_match -v
+
+python -u scripts/auto_match.py \
+  --seed cases/00672cf0/probe_prompt_v004_run001_repair001.cpp \
+  --beam-width 16 --workers 16 \
+  --max-compiles 3000 --max-generations 6
+```
+
+This resumes `cases/00672cf0/auto_match/6d533a9d9571`, including
+the 2,000 estimated compiles already spent. The additional 1,000 compiles
+are a search budget, not a promise of a byte match. The generated provenance,
+VC9 outputs and proof records remain local, ignored research artifacts.
+
+The mechanical mutation catalog is still incomplete, and the current
+regression tests mock compiler/prover backends rather than reproducing a full
+WSL matching run. A successful empirical Unicorn test alone never upgrades
+a candidate to EQUIVALENT.
