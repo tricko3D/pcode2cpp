@@ -39,3 +39,22 @@ python -u scripts/c2scope_feedback.py --rounds 3 \
 The new run gets its own `runNNN/` folder, builds a fresh snapshot of the current candidate, and takes C2Scope data from `run002` only for round 1. Subsequent rounds gather new compiler traces.
 
 This experiment now defaults to `chat_template_kwargs.reasoning_effort="minimal"`, output capped at the smaller of `4096` or the existing LLM configuration's `max_tokens`, and a 10,000-character maximum for reasoning before the first JSON chunk. Inkling 2 Mini reads `reasoning_effort` rather than `enable_thinking`; `minimal` reduces thinking but does not promise to turn it off completely. Customize with `--reasoning-effort none|low|medium|high|xhigh`, `--reasoning-limit-chars N`, and `--max-tokens N`. Full reasoning is written to the transcript while stdout shows only the first 400 characters. A repetition or truncation aborts without accepting a partial function.
+
+## When Inkling changes the source but not the machine code
+
+The script now hashes each compiled function's VC9 instruction bytes. A source rewrite that produces identical machine code is logged as `SAME_MACHINE_CODE` and is not re-tested with Unicorn or angr. A repeated source is logged as `REPEATED_SOURCE`, and the remaining rounds (if any) receive the rejected rewrite as feedback. The same C2Scope trace is reused while the selected machine code remains unchanged. Successful empirical/formal validation of unchanged code is never counted as a new result.
+
+For a model-free comparison, C2Scope's own `rwsweep.py` mechanically enumerates meaning-preserving source transformations, compiles them with the exact C2 backend and scores their assembly against the original:
+
+```bash
+cd ~/c2scope
+env -u VIRTUAL_ENV C2TRACE_REMOTE=0 uv run tools/rwsweep.py \
+  ~/spore-decomp/work/pcode2cpp_checks/candidate_00672cf0_6d533a9d9571.cpp \
+  --func '?FUN_00672cf0@InklingCandidate_s00672cf0@@QAEPAHPAH@Z' \
+  --asm-vs ~/pcode2cpp/cases/00672cf0/c2scope_runs/run003/c2scope_original_00672cf0.s \
+  --families wrap,alias,swap,split,touch,subst,paren \
+  --c2 15.00 \
+  -- /O2 /MD /Gy /EHsc /TP
+```
+
+The sweep's `rdiff` and `bdiff` are comparisons of generated assembly, not independent behavioral proofs. A promising variant still needs a Spore fingerprint check and Unicorn/formal proof using its own compiled object.
