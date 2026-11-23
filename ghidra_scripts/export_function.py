@@ -115,7 +115,7 @@ def collect_types(dtypes):
     return sorted(definitions.values(), key=lambda x: x["path"])
 
 
-def export_one(program, entry):
+def export_one(program, entry, monitor):
     fm = program.getFunctionManager()
     f = fm.getFunctionAt(entry)
     if f is None:
@@ -247,14 +247,19 @@ def export_one(program, entry):
         dec.dispose()
 
 
-args = getScriptArgs()
-if len(args) != 2:
-    raise ValueError("Usage: export_function.py <output.json> <hex_function_entry>")
-output_path, function_address = args
-space = currentProgram.getAddressFactory().getDefaultAddressSpace()
-entry = space.getAddress(int(function_address, 16))
-context = export_one(currentProgram, entry)
-with open(output_path, "w", encoding="utf-8") as fh:
-    json.dump(context, fh, indent=2, sort_keys=True, ensure_ascii=False)
-println("pcode2cpp exported %s (%d P-code operations, %d calls)" % (
-    function_address, len(context["high_pcode"]), len(context["calls"])))
+def main():
+    args = getScriptArgs()
+    if len(args) != 2:
+        raise ValueError("Usage: export_function.py <output.json> <hex_function_entry>")
+    output_path, function_address = args
+    space = currentProgram.getAddressFactory().getDefaultAddressSpace()
+    entry = space.getAddress(int(function_address, 16))
+    context = export_one(currentProgram, entry, monitor)
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump(context, fh, indent=2, sort_keys=True, ensure_ascii=False)
+    println("pcode2cpp exported %s (%d P-code operations, %d calls)" % (
+        function_address, len(context["high_pcode"]), len(context["calls"])))
+
+
+if __name__ == "__main__":
+    main()
