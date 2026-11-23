@@ -18,8 +18,10 @@ The search integrates:
 - Spore's existing VC9 fingerprint backend, Unicorn differential test, and
   `prove_spore_candidate.py` angr worker. No proof logic is reinvented.
 - SQLite candidate records under an ignored `cases/` work directory, machine-code
-  deduplication, and a beam that retains some identical-code source variants
-  for the next round because later mutations may behave differently.
+  deduplication, and a source archive that retains identical-code variants
+  for field-dependency lookahead. By default, those duplicates are not given
+  another full C2Scope sweep; the tradeoff can be changed with
+  `--machine-alternatives`.
 
 ## Run
 
