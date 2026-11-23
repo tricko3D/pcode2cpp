@@ -3,7 +3,9 @@
     "project_path": "/home/YOU/spore-decomp/work/ghidra",
     "project_name": "spore",
     "project_program": "SporeApp.analysis.bin",
-    "install_dir": null
+    "install_dir": null,
+    "analyze_if_missing": true,
+    "timeout_seconds": 7200
   },
   "llm": {
     "url": "http://127.0.0.1:8080/v1/chat/completions",
