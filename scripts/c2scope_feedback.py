@@ -150,21 +150,53 @@ def run_c2scope(c2root: Path, state: dict, case: Path, tag: str, sched: bool = T
     if not sched:
         commands.pop("schedwant")
     logs = {}
+    env = dict(os.environ, C2TRACE_REMOTE="0", PCODE2CPP_C2SCOPE_ROOT=str(c2root))
+    # The caller may have activated pcode2cpp/.venv; uv must pick c2scope/.venv.
+    env.pop("VIRTUAL_ENV", None)
+    merge_hook_error = re.compile(
+        r"no c2 function \\?(?:FgDoLateFlowOpts(?:Once)?|FgTryCommonTailMerge|"
+        r"FgDoCommonTailMerge|FgMdInstrsMatch|FgTryTailMerge|"
+        r"FgCrossJumpRemove|FgTryCommonHeadMerge|FgDoCommonHeadMerge|FgTryHeadMerge)"
+    )
     for name, cmd in commands.items():
         log = case / f"{tag}.{name}.log"
         print(f"C2Scope {name}: {log}", flush=True)
         try:
-            result = subprocess.run(cmd, cwd=c2root, env=dict(os.environ, C2TRACE_REMOTE="0"),
+            result = subprocess.run(cmd, cwd=c2root, env=env,
                                     capture_output=True, text=True, timeout=180, check=False)
+            full = result.stdout + result.stderr
+            fallback_used = False
+            if name == "icount" and result.returncode and merge_hook_error.search(full):
+                print(
+                    "C2Scope VC9 late-flow merge hook unavailable; retrying "
+                    "instruction-count analysis without optional merge hooks.",
+                    flush=True,
+                )
+                shim = (ROOT / "scripts/c2scope_icount_fallback.py").resolve()
+                if not shim.is_file():
+                    raise RuntimeError(f"C2Scope fallback shim missing: {shim}")
+                retry_cmd = ["uv", "run", "python", str(shim), *cmd[3:]]
+                retry = subprocess.run(
+                    retry_cmd, cwd=c2root, env=env,
+                    capture_output=True, text=True, timeout=180, check=False,
+                )
+                full += (
+                    "\n\n=== Retry without optional VC9 merge hooks ===\n"
+                    + retry.stdout + retry.stderr
+                )
+                result = retry
+                fallback_used = True
         except (OSError, subprocess.TimeoutExpired) as exc:
             log.write_text(str(exc) + "\n", encoding="utf-8")
             logs[name] = {"ok": False, "log": str(log), "detail": str(exc)}
             if name == "icount":
                 raise RuntimeError(f"C2Scope icount failed: {exc}") from exc
             continue
-        full = result.stdout + result.stderr
         log.write_text(full, encoding="utf-8")
-        logs[name] = {"ok": result.returncode == 0, "log": str(log), "detail": full[-1200:]}
+        logs[name] = {
+            "ok": result.returncode == 0, "log": str(log), "detail": full[-1200:],
+            "fallback_without_merges": fallback_used,
+        }
         if name == "icount" and result.returncode:
             raise RuntimeError(f"C2Scope icount exited {result.returncode}: {full[-1200:]}")
     return logs
