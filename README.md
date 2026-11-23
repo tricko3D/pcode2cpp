@@ -135,6 +135,30 @@ be large, check the generated prompt size against the model's context window.
 **This command only builds the prompt.** It does not invoke Inkling,
 change `translate.py`, or modify the analyzed Ghidra project.
 
+## Notebook-free end-to-end CLI and AI fallback
+
+The opt-in [standalone pipeline](docs/full-cli-pipeline.md) runs Ghidra context
+export, initial reconstruction, VC9/C2Scope source search, Unicorn and angr
+without Jupyter:
+
+```bash
+cp config.model-profiles.example.json config.model-profiles.json
+python -u scripts/run_pipeline.py --address 0x00672cf0 \
+  --initial-model inkling-small --fallback-model inkling-small \
+  --max-compiles 3000 --ai-rounds 3
+```
+
+The initial model produces a C++ seed. **Only after the mechanical VC9/C2Scope
+stage plateaus** does `scripts/ai_fallback.py` request bounded source mutations
+from the configured model; compiled and proved results return to the mechanical
+search. Profiles support locally hosted Inkling models and optional remote
+OpenAI-compatible providers. Remote calls require explicit `--allow-remote`
+and HTTPS, and may send source, assembly, and initial Ghidra context.
+
+This experimental CLI currently targets Spore `0x00672CF0`; the original
+local-only, one-shot translator remains unchanged. Model credentials stay in
+environment variables, not configuration files or logs.
+
 ## Automated byte-matching research pilot (Spore)
 
 An optional, separate search controller, `scripts/auto_match.py`, automates
