@@ -152,3 +152,40 @@ The mechanical mutation catalog is still incomplete, and the current
 regression tests mock compiler/prover backends rather than reproducing a full
 WSL matching run. A successful empirical Unicorn test alone never upgrades
 a candidate to EQUIVALENT.
+
+
+## Near-match scheduling probes and low-budget behavior
+
+The continued search independently found a 57-byte **EQUIVALENT** candidate at
+`rdiff 1, bdiff 4`. That is not a fingerprint `MATCH`: an instruction-store
+ordering difference remains.
+
+For already compiled near-match candidates (`rdiff <= 3`), the controller
+now proposes adjacent, independent-looking `param_1[...]` field-store
+reorderings. It avoids reversing an explicit field dependency, and it does
+not label these rewrites semantically safe. VC9 compilation, Unicorn testing,
+and formal proof continue to determine acceptance. Existing near-match
+candidates are backfilled on resume, including those from prior completed
+sweeps. These are speculative scheduling probes, not a guarantee that VC9
+will change the instruction order or find the final match.
+
+When fewer than 24 estimated compiles remain and no pending candidates need
+evaluation, the controller stops instead of attempting a one-variant sweep
+and repeatedly printing empty generations. The threshold can be adjusted
+with `--min-sweep-budget`.
+
+To resume after 2,991 estimated compiles have already been used:
+
+```bash
+cd ~/pcode2cpp
+git pull --ff-only
+python -m unittest tests.test_auto_match -v
+
+python -u scripts/auto_match.py \
+  --seed cases/00672cf0/probe_prompt_v004_run001_repair001.cpp \
+  --beam-width 16 --workers 16 \
+  --max-compiles 3600 --max-generations 6
+```
+
+The higher limit is cumulative. The best previously proved candidate remains
+preserved even if subsequent speculative rewrites compile to nonmatches.
