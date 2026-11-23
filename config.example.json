@@ -1,9 +1,9 @@
 {
   "ghidra": {
-    "pyghidra": "pyghidra",
-    "project_path": "/home/YOU/spore-decomp/work/ghidra",
+    "project_path": "/path/to/existing/ghidra/project-parent",
     "project_name": "spore",
-    "program": "/home/YOU/spore-decomp/work/SporeApp.analysis.bin",
+    "program": "/path/to/SporeApp.analysis.bin",
+    "project_program": "SporeApp.analysis.bin",
     "install_dir": null
   },
   "llm": {
