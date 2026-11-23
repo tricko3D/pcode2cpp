@@ -135,6 +135,18 @@ be large, check the generated prompt size against the model's context window.
 **This command only builds the prompt.** It does not invoke Inkling,
 change `translate.py`, or modify the analyzed Ghidra project.
 
+## Automated byte-matching research pilot (Spore)
+
+An optional, separate search controller, `scripts/auto_match.py`, automates
+multiple generations of C2Scope source rewrites, VC9 compilation, Unicorn
+differential testing and angr proofs. It uses a persistent SQLite candidate
+store and adds a field-dependency rewrite discovered during the 0x00672CF0
+experiment. It does **not** change the single-request, non-agentic core
+translator, modify Spore's tracked sources, or call an LLM during the search.
+
+See [Automated VC9 matching](docs/auto-match.md) for setup, resumable
+commands, search budgets, verification rules and limitations.
+
 ## Optional verification integration
 
 The core only handles Ghidra context → local C++. A small standard `VerificationBackend` interface in `pcode2cpp/verification.py` accepts a function address and a prepared source-file path, returning one of:
