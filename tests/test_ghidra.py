@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pcode2cpp.ghidra import SCRIPT, RUNNER, export_function
+from pcode2cpp.ghidra import SCRIPT, ROOT, RUNNER_MODULE, export_function
 from tests.test_context import sample
 
 
@@ -20,7 +20,8 @@ class GhidraTests(unittest.TestCase):
             dst = root / "case" / "context.json"
 
             def fake_run(args, **kwargs):
-                self.assertEqual(args[1], str(RUNNER))
+                self.assertEqual(args[1:3], ["-m", RUNNER_MODULE])
+                self.assertEqual(kwargs["cwd"], str(ROOT))
                 self.assertEqual(args[args.index("--project-directory") + 1], str(nested))
                 self.assertEqual(args[args.index("--program-name") + 1],
                                  "SporeApp.analysis.bin")
