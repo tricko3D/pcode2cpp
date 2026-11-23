@@ -1,4 +1,4 @@
-"""Export a function from an existing Ghidra GUI project using PyGhidra."""
+"""Export one function from a previously analyzed Ghidra project."""
 
 import os
 from pathlib import Path
@@ -12,35 +12,49 @@ SCRIPT = ROOT / "ghidra_scripts" / "export_function.py"
 RUNNER = ROOT / "pcode2cpp" / "_ghidra_export_runner.py"
 
 
+def _existing_project_directory(parent: Path, name: str) -> Path:
+    """Resolve either GUI .gpr layout or PyGhidra's nested project layout."""
+    direct = parent / (name + ".gpr")
+    nested_dir = parent / name
+    nested = nested_dir / (name + ".gpr")
+    if direct.is_file() and nested.is_file():
+        raise ValueError("Ambiguous Ghidra project: both direct and nested projects exist")
+    if direct.is_file():
+        return parent
+    if nested.is_file():
+        return nested_dir
+    raise FileNotFoundError(
+        f"No existing Ghidra project found at {direct} or {nested}. "
+        "Check ghidra.project_path and ghidra.project_name."
+    )
+
+
 def export_function(address: int | str, destination: str | Path, settings: dict) -> dict:
-    """Export one previously analyzed function, without triggering analysis."""
+    """Export without importing binaries, reanalyzing, or altering a project."""
     addr = int(address, 16) if isinstance(address, str) else int(address)
     if addr < 0:
         raise ValueError("Negative function address")
 
     dst = Path(destination).expanduser().resolve()
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    project_path = Path(settings["project_path"]).expanduser().resolve()
-    if not project_path.is_dir():
-        raise FileNotFoundError(f"Ghidra project parent directory not found: {project_path}")
-
+    parent = Path(settings["project_path"]).expanduser().resolve()
     name = settings["project_name"]
-    locator = project_path / (name + ".gpr")
-    if not locator.is_file():
-        raise FileNotFoundError(f"Existing Ghidra project not found: {locator}")
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+        raise ValueError("project_name must be a simple Ghidra project name")
+    project_dir = _existing_project_directory(parent, name)
 
-    binary = Path(settings["program"]).expanduser().resolve()
-    if not binary.is_file():
-        raise FileNotFoundError(f"Ghidra program binary not found: {binary}")
-    program_name = settings.get("project_program") or binary.name
-    if not isinstance(program_name, str) or not program_name or "/" in program_name or "\\" in program_name:
-        raise ValueError("project_program must be the program name at the Ghidra project root")
+    binary_path = settings.get("program")
+    program_name = settings.get("project_program")
+    if not program_name and binary_path:
+        program_name = Path(binary_path).name
+    if (not isinstance(program_name, str) or not program_name or
+            "/" in program_name or "\\" in program_name):
+        raise ValueError("Set ghidra.project_program to the existing Ghidra program name")
 
+    dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable, str(RUNNER),
-        "--project-path", str(project_path),
+        "--project-directory", str(project_dir),
         "--project-name", name,
-        "--binary", str(binary),
         "--program-name", program_name,
         "--script", str(SCRIPT),
         "--output", str(dst),
@@ -49,7 +63,7 @@ def export_function(address: int | str, destination: str | Path, settings: dict)
     if settings.get("install_dir"):
         cmd.extend(["--install-dir", str(Path(settings["install_dir"]).expanduser().resolve())])
 
-    # A previous JSON must never be mistaken for a successful fresh export.
+    # An old export must never be mistaken for a successful fresh export.
     dst.unlink(missing_ok=True)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
                           check=False, env=os.environ.copy())
