@@ -37,7 +37,7 @@ High P-code is Ghidra's SSA-like, optimized intermediate representation, not a d
 
 ## Setup (Linux / WSL)
 
-Python 3.10+ and an **already analyzed Ghidra project** are required. Install `pyghidra` in the Python environment that launches the exporter and point `GHIDRA_INSTALL_DIR` at the installed Ghidra directory when needed. The repository does not install Ghidra itself.
+Python 3.10+ and an **existing Ghidra project containing an imported binary** are required. If the target address has no function yet, the notebook runs full Ghidra auto-analysis and saves the project before exporting; analysis is not repeated when the target function already exists. Install `pyghidra` in the Python environment that launches the exporter and point `GHIDRA_INSTALL_DIR` at the installed Ghidra directory when needed. The repository does not install Ghidra itself.
 
 ```bash
 # From the pcode2cpp repository root
@@ -60,12 +60,14 @@ For the **existing WSL Spore retail project** (if originally created with `tools
     "project_path": "/home/patrick/spore-decomp/work/ghidra",
     "project_name": "spore",
     "project_program": "SporeApp.analysis.bin",
-    "install_dir": null
+    "install_dir": null,
+    "analyze_if_missing": true,
+    "timeout_seconds": 7200
   }
 }
 ```
 
-Set `install_dir` to the **Linux** Ghidra installation if PyGhidra cannot locate it automatically. Retain `llm` and `spore` in `config.json`. The notebook can run entirely in WSL using the existing local llama.cpp server. The exporter uses PyGhidra's `open_project` and `program_context`, opens only an already-imported program and does **not** create projects, reimport binaries, or call auto-analysis.
+Set `install_dir` to the **Linux** Ghidra installation if PyGhidra cannot locate it automatically. Retain `llm` and `spore` in `config.json`. The notebook can run entirely in WSL using the existing local llama.cpp server. The exporter uses PyGhidra's `open_project` and `program_context`, opens only an already-imported program, and does **not** create projects or reimport binaries. When the requested function entry is not defined, it automatically runs a full Ghidra analysis and saves the existing project. The default analysis timeout is 7,200 seconds; `analyze_if_missing: false` prevents automatic analysis. It refuses addresses outside executable memory or inside an existing function. If full analysis still cannot identify the function, it reports that explicitly instead of inventing function boundaries.
 
 Spore development PDB data imported into a **Windows** Ghidra project does not automatically appear in the retail Ghidra project in WSL. To use that separate development program, copy the associated `.gpr` and `.rep` project directory into the WSL filesystem and point the same configuration keys at it. Windows files can be accessed at `/mnt/c/...`, but Ghidra project databases are best kept on the native Linux filesystem. Development-build addresses and symbols must not be assumed to correspond to the retail build. The first end-to-end export should be verified on your machine.
 
@@ -75,13 +77,12 @@ Spore development PDB data imported into a **Windows** Ghidra project does not a
 jupyter lab
 ```
 
-Open `notebooks/reconstruct.ipynb`. It uses a single `ADDRESS` variable and independent cells:
+Open `notebooks/reconstruct.ipynb`. Its **first code cell is self-contained** (including imports, configuration, selected `ADDRESS`, Ghidra preparation and JSON export), so running it after a kernel restart does not require extra setup cells. The remaining cells handle:
 
-1. Export one function and validate its JSON.
-2. Inspect signatures, types, resolved calls and pseudocode.
-3. Display the **full, untruncated prompt and context** that will be sent.
-4. Send **one local inference request** and save the response as C++.
-5. Optionally verify an already-integrated translation unit in an external project.
+1. Inspect signatures, types, resolved calls and pseudocode.
+2. Display the **full, untruncated prompt and context** that will be sent.
+3. Send **one local inference request** and save the response as C++.
+4. Optionally verify an already-integrated translation unit in an external project.
 
 The notebook defaults to the known `0x00672CF0` Spore example. Change `ADDRESS` to any valid entry in the analyzed binary. Generated contexts and C++ live in untracked `cases/<address>/` directories, and inferred secrets/binary artifacts are not committed.
 
@@ -98,7 +99,7 @@ cpp, metadata = translate(context, config["llm"])
 print(cpp)
 ```
 
-The Ghidra exporter directly opens an existing project and program with the PyGhidra API. It does **not** create or analyze a project, modify symbols, or install PDB data.
+The Ghidra exporter directly opens an existing project and program with the PyGhidra API. It does **not** create projects, import binaries or install PDB data. When a function is missing, it can analyze and save that existing project; it never guesses a function definition.
 
 ## Optional verification integration
 
