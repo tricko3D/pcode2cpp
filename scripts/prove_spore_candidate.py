@@ -14,7 +14,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from verify_spore_vc9 import ROOT, VA, render_vc9_source
+try:
+    from .verify_spore_vc9 import ROOT, VA, render_vc9_source
+except ImportError:
+    from verify_spore_vc9 import ROOT, VA, render_vc9_source
 
 
 def prepare_source(repo: Path, candidate: Path) -> Path:
@@ -55,7 +58,6 @@ def verify_compiled_candidate(repo: Path, source: Path, layers: list[str], timeo
         print("VC9 COMPILE FAILED\n" + (compile_log or "(no diagnostics)"))
         return 1
 
-    from verify_spore_vc9 import render_vc9_source as unused  # noqa: F401
     symbol_prefix = "?FUN_00672cf0@InklingCandidate_s00672cf0@@"
     names = [name for name in Coff(obj).functions() if name.startswith(symbol_prefix)]
     if len(names) != 1:
