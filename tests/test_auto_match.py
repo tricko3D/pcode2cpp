@@ -135,6 +135,22 @@ return param_1;
             self.assertTrue((root / 'state/summary.json').exists())
             self.assertEqual(A.Store(root / 'state').getmeta('estimated_compiles'), 2)
 
+    def test_unvalidated_callee_is_not_promoted_or_deduplicated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            s = A.Store(root)
+            child = s.add('wrong external function', None, 'seed', 0, 1, 4)
+            state = {'machine_sha256': 'same', 'fingerprint': 'bytes differ',
+                     'prepared': str(root / 'bad.cpp'), 'candidate_bytes': 57,
+                     'callee_symbol_valid': False}
+            fake = types.SimpleNamespace(store=s, repo=root, a=types.SimpleNamespace(
+                inputs=700, proof_timeout=90), remaining=lambda: 100)
+            with patch.object(A, 'snapshot_prepared', return_value=state), \
+                 patch.object(A, 'proof_worker', side_effect=AssertionError('no proof')):
+                self.assertFalse(A.Engine.evaluate(fake, child, do_unicorn=True, do_proof=True))
+            self.assertEqual(s.row(child)['status'], 'UNSAFE')
+            self.assertIsNone(s.row(child)['proof'])
+
     def test_proved_candidate_is_not_replaced_by_unproven_lower_diff(self):
         with tempfile.TemporaryDirectory() as folder:
             s = A.Store(Path(folder))
