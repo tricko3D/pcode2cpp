@@ -50,23 +50,24 @@ cp config.example.json config.json
 
 Edit `config.json` for the analyzed Ghidra project, program file, local llama.cpp URL and optional external Spore checkout. `config.json` is ignored by Git.
 
-**Existing GUI project integration:** `ghidra.project_path` is the **parent directory containing the `.gpr` file**, not the `.rep` directory; `ghidra.project_name` is the project filename without `.gpr`; `ghidra.project_program` is the name of the already imported binary at the Ghidra project root. `ghidra.program` is the accessible path to that binary on disk. The exporter opens the existing GUI-style project with PyGhidra and **does not reanalyze or create a second nested project**. Close that project in the Ghidra GUI before exporting to avoid project-lock conflicts.
+**Existing Ghidra project integration (Linux/WSL and Windows):** `ghidra.project_path` is the parent directory where PyGhidra was pointed when the project was created. Both standard Ghidra projects (`<parent>/<name>.gpr`) and PyGhidra's nested layout (`<parent>/<name>/<name>.gpr`) are supported. `ghidra.project_name` is the project filename without `.gpr`; `ghidra.project_program` is the imported program name inside the Ghidra project (at its root). The legacy `ghidra.program` setting can still supply the program name, but the binary does not need to exist on disk for an existing project.
 
-For a Ghidra project created in **Windows**, run pcode2cpp from Windows Python so it accesses the native project directly. For example, if the project is `C:\\Users\\patrick\\spore-retail.gpr` and the binary was imported as `SporeApp.retail.analysis.bin`:
+For the **existing WSL Spore retail project** (if originally created with `tools/ghidra/run.sh`), the `ghidra` section is approximately:
 
 ```json
 {
   "ghidra": {
-    "project_path": "C:/Users/patrick",
-    "project_name": "spore-retail",
-    "program": "C:/SporeSymbols/SporeApp.retail.analysis.bin",
-    "project_program": "SporeApp.retail.analysis.bin",
-    "install_dir": "C:/ghidra_12.1.4_PUBLIC"
+    "project_path": "/home/patrick/spore-decomp/work/ghidra",
+    "project_name": "spore",
+    "project_program": "SporeApp.analysis.bin",
+    "install_dir": null
   }
 }
 ```
 
-Keep the existing `llm` and `spore` sections of `config.json` when updating `ghidra`. Install `pyghidra` and `jupyterlab` in the same Windows Python environment that runs the notebook. The existing `context = export_function(...)` notebook cell then loads the analyzed project and writes `cases/<address>/context.json` automatically. No manual JSON copying or GUI export scripts are needed. The first end-to-end Ghidra export still requires verification on your machine.
+Set `install_dir` to the **Linux** Ghidra installation if PyGhidra cannot locate it automatically. Retain `llm` and `spore` in `config.json`. The notebook can run entirely in WSL using the existing local llama.cpp server. The exporter uses PyGhidra's `open_project` and `program_context`, opens only an already-imported program and does **not** create projects, reimport binaries, or call auto-analysis.
+
+Spore development PDB data imported into a **Windows** Ghidra project does not automatically appear in the retail Ghidra project in WSL. To use that separate development program, copy the associated `.gpr` and `.rep` project directory into the WSL filesystem and point the same configuration keys at it. Windows files can be accessed at `/mnt/c/...`, but Ghidra project databases are best kept on the native Linux filesystem. Development-build addresses and symbols must not be assumed to correspond to the retail build. The first end-to-end export should be verified on your machine.
 
 **Run Inkling separately**, using the existing llama.cpp server with enough context for the entire function record and the requested output length. An example server endpoint is `http://127.0.0.1:8080/v1/chat/completions`. The server is *not* started by pcode2cpp. No OpenRouter/API key is used.
 
@@ -97,7 +98,7 @@ cpp, metadata = translate(context, config["llm"])
 print(cpp)
 ```
 
-The Ghidra launcher uses `--skip-analysis` and an existing project. It does **not** create or analyze a new project, modify symbols, or install PDB data.
+The Ghidra exporter directly opens an existing project and program with the PyGhidra API. It does **not** create or analyze a project, modify symbols, or install PDB data.
 
 ## Optional verification integration
 
@@ -159,6 +160,7 @@ pcode2cpp/
 ├── pcode2cpp/
 │   ├── __init__.py
 │   ├── ghidra.py
+│   ├── _ghidra_export_runner.py
 │   ├── context.py
 │   ├── translate.py
 │   └── verification.py
