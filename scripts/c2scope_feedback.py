@@ -154,7 +154,7 @@ def run_c2scope(c2root: Path, state: dict, case: Path, tag: str, sched: bool = T
     # The caller may have activated pcode2cpp/.venv; uv must pick c2scope/.venv.
     env.pop("VIRTUAL_ENV", None)
     merge_hook_error = re.compile(
-        r"no c2 function \\?(?:FgDoLateFlowOpts(?:Once)?|FgTryCommonTailMerge|"
+        r"no c2 function \?(?:FgDoLateFlowOpts(?:Once)?|FgTryCommonTailMerge|"
         r"FgDoCommonTailMerge|FgMdInstrsMatch|FgTryTailMerge|"
         r"FgCrossJumpRemove|FgTryCommonHeadMerge|FgDoCommonHeadMerge|FgTryHeadMerge)"
     )
