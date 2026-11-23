@@ -121,6 +121,79 @@ class C2ScopeFeedbackTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertNotIn("tools", calls[0])
             self.assertEqual(calls[0]["max_tokens"], 16000)
+            self.assertEqual(calls[0]["chat_template_kwargs"], {"reasoning_effort": "minimal"})
+            self.assertEqual(calls[0]["temperature"], 1.0)
+
+    def test_abort_runaway_reasoning_without_accepting_candidate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            events = [
+                {"choices": [{"delta": {"reasoning_content": "thinking again " * 10}}]},
+                {"choices": [{"delta": {"reasoning_content": "thinking again " * 10}}]},
+            ]
+            lines = "".join("data: " + json.dumps(e) + "\n\n" for e in events)
+            with patch.object(C, "urlopen", return_value=io.BytesIO(lines.encode("utf-8"))):
+                with self.assertRaisesRegex(RuntimeError, "bounded reasoning budget"):
+                    C.stream_model({"model": "local"}, C.make_messages(
+                        "return param_1;", "", "", "feedback"
+                    ), Path(temp) / "repeated.log", 2048, reasoning_limit_chars=100)
+            self.assertIn("thinking again", (Path(temp) / "repeated.log").read_text())
+
+    def test_reuses_existing_c2scope_feedback_without_running_trace_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            candidate = root / "candidate.cpp"
+            candidate.write_text(PREFIX + "return param_1;\n}\n")
+            prior = root / "previous"
+            prior.mkdir()
+            (prior / "c2scope_base.icount.json").write_text(json.dumps({
+                "ours": 26, "orig": 24, "runs": [{"kind": "extra", "items": []}]
+            }))
+            old = prior / "candidate_c2scope_001.feedback.json"
+            old.write_text(json.dumps({
+                "candidate": str(candidate),
+                "c2scope_logs": {},
+                "messages": [],
+            }))
+            repo = root / "spore"
+            (repo / "tools/contrib").mkdir(parents=True)
+            (repo / "tools/contrib/check.py").touch()
+            (repo / ".venv/bin").mkdir(parents=True)
+            (repo / ".venv/bin/python").touch()
+            c2root = root / "c2scope"
+            (c2root / "tools").mkdir(parents=True)
+            (c2root / "tools/icount.py").touch()
+            (root / "config.json").write_text(json.dumps({
+                "spore": {"repo_path": str(repo)}, "llm": {}
+            }))
+            def fake_snapshot(repo, source, case, tag):
+                orig = case / "orig.s"
+                orig.write_text("00672cf0 push esi\n")
+                mine = case / f"{tag}.s"
+                mine.write_text("00672cf0 push ebx\n")
+                return {"fingerprint": "size 58, retail 57",
+                        "retail_bytes": 57, "candidate_bytes": 58,
+                        "retail_instructions": 24, "candidate_instructions": 26,
+                        "shape_similarity_heuristic": 0.76,
+                        "original_asm": str(orig), "candidate_asm": str(mine),
+                        "prepared": "fixture"}
+
+            args = type("Args", (), dict(
+                candidate=candidate, spore_repo=repo, c2scope_repo=c2root, rounds=1,
+                max_tokens=None, inputs=700, proof_timeout=90, dry_run=True,
+                no_schedwant=False, resume_feedback=old,
+                reasoning_effort="minimal", reasoning_limit_chars=10000
+            ))()
+            with patch.object(C, "ROOT", root), \
+                 patch.object(C, "snapshot", side_effect=fake_snapshot), \
+                 patch.object(C, "check_candidate", return_value=type(
+                     "Compile", (), {"status": "PASS", "passed": True}
+                 )()), \
+                 patch.object(C, "run_c2scope", side_effect=AssertionError("trace rerun")):
+                result = C.run(args)
+            self.assertEqual(result, 0)
+            files = list((root / "c2scope_runs/run001").glob("*.feedback.json"))
+            self.assertEqual(len(files), 1)
+            self.assertIn("size 58", files[0].read_text())
 
     def test_isolated_inference_keeps_original_and_stops_on_match(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -157,14 +230,19 @@ class C2ScopeFeedbackTests(unittest.TestCase):
             args = type("Args", (), dict(
                 candidate=candidate, spore_repo=repo, c2scope_repo=c2root, rounds=3,
                 max_tokens=None, inputs=700, proof_timeout=90, dry_run=False,
-                no_schedwant=False
+                no_schedwant=False, resume_feedback=None,
+                reasoning_effort="minimal", reasoning_limit_chars=10000
             ))()
             with patch.object(C, "ROOT", root), \
                  patch.object(C, "snapshot", side_effect=fake_snapshot), \
                  patch.object(C, "check_candidate", return_value=type(
                      "Compile", (), {"status": "PASS", "passed": True}
                  )()), \
-                 patch.object(C, "run_c2scope", return_value={}), \
+                 patch.object(C, "run_c2scope", side_effect=lambda c2, state, case, tag, **kwargs: (
+                     (case / f"{tag}.icount.json").write_text(json.dumps({
+                         "ours": 26, "orig": 24, "runs": []
+                     })) and {}
+                 )), \
                  patch.object(C, "stream_model", return_value="return param_1;\nparam_1[0] = 1;"), \
                  patch.object(C, "formal_test", return_value="MATCH"):
                 result = C.run(args)
