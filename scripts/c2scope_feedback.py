@@ -362,7 +362,7 @@ def run(args) -> int:
             return 0
         body = stream_model(model_cfg, messages, case / f"{tag}.llm.log",
                             args.max_tokens if args.max_tokens is not None else model_cfg.get("max_tokens", 32768))
-        if re.search(r"\\b(?:__asm|_asm|asm|__emit|_emit)\\b|__declspec\\s*\\(\\s*naked\\s*\\)|^\\s*#(?:include|pragma)", body, re.I | re.M):
+        if re.search(r"\b(?:__asm|_asm|asm|__emit|_emit)\b|__declspec\s*\(\s*naked\s*\)|^\s*#(?:include|pragma)", body, re.I | re.M):
             print("Rejected inline assembly, naked function, or directive in model output", flush=True)
             return 1
         new_path = case / f"{tag}.cpp"
