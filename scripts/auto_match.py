@@ -43,7 +43,7 @@ NUM = r"(?:0[xX][0-9a-fA-F]+|\d+)"
 STORE_RE = re.compile(
     rf"(?P<lhs>(?:hs_bind\(\s*)?(?P<ptr>param_1)(?:\s*\))?)"
     rf"\s*\[\s*(?P<slot>{NUM})\s*\]\s*=\s*"
-    rf"\(\s*int\s*\)\s*\(\s*(?P=ptr)\s*\+\s*(?P<offset>{NUM})\s*\)\s*;"
+    rf"\(\s*int\s*\)\s*\(\s*(?:hs_bind\(\s*)?(?P=ptr)\s*\)?\s*\+\s*(?P<offset>{NUM})\s*\)\s*;"
 )
 
 
@@ -220,7 +220,8 @@ class Store:
     def eligible(self, beam_width: int, max_per_machine: int) -> list:
         """Best-scored frontier, with reserved space for dataflow exploration."""
         rows = [r for r in self.all() if not r["expanded"] and r["snapshot"] is not None and
-                r["status"] not in ("VC9_FAILED", "UNSAFE", "ERROR")]
+                r["status"] not in ("VC9_FAILED", "UNSAFE", "ERROR") and
+                (max_per_machine > 1 or r["status"] != "DUPLICATE_MACHINE")]
         rows.sort(key=lambda r: (r["rdiff"] if r["rdiff"] is not None else 10000,
                                  r["bdiff"] if r["bdiff"] is not None else 10000,
                                  r["generation"], r["id"]))
@@ -361,6 +362,70 @@ class Engine:
             print(f"  Formal: {proof}", flush=True)
         return False
 
+    def enqueue_field_mutations(self, row) -> list[str]:
+        """Cross a stored source with dataflow rewrites without waiting for its sweep.
+
+        This also works on historic, already-expanded sources after resuming an
+        older database. Generated candidates remain unverified until compiled.
+        """
+        if row["generation"] >= self.a.max_generations or row["status"] in (
+                "VC9_FAILED", "UNSAFE", "ERROR"):
+            return []
+        found = []
+        for label, source in field_dependency_mutations(
+                Path(row["path"]).read_text(encoding="utf-8")):
+            child = self.store.add(source, row["id"], label, row["generation"] + 1,
+                                   row["rdiff"], row["bdiff"])
+            if child != row["id"] and child not in found:
+                found.append(child)
+        return found
+
+    def backfill_field_mutations(self) -> int:
+        """Recover cross-family candidates missed by earlier search versions."""
+        before = len(self.store.all())
+        for row in self.store.all():
+            # Uncompiled proposals may be invalid, so generate lookahead only
+            # from candidates that have been successfully compiled before.
+            if row["snapshot"] is not None:
+                self.enqueue_field_mutations(row)
+        return len(self.store.all()) - before
+
+    def evaluate_pending(self, quota: dict, max_count: int | None = None) -> bool:
+        """Test new combinations *before* spending the remaining budget on sweeps."""
+        fresh = [r for r in self.store.all() if r["snapshot"] is None and
+                 r["status"] == "NEW"]
+        rank = lambda r: (r["rdiff"] if r["rdiff"] is not None else 10000,
+                          r["bdiff"] if r["bdiff"] is not None else 10000,
+                          r["generation"], r["id"])
+        fresh.sort(key=rank)
+        # Dataflow results have inherited scores until C2Scope measures them.
+        # Reserve half the verification slots for those high-impact hypotheses.
+        specials = [r for r in fresh if r["origin"].startswith("field:")]
+        special_limit = min(len(specials), max(2, self.a.evaluate_top // 2))
+        preferred = specials[:special_limit]
+        ordered = preferred + [r for r in fresh if r not in preferred]
+        cap = quota["evaluate"] if max_count is None else min(quota["evaluate"], max_count)
+        for row in ordered[:cap]:
+            if self.remaining() < 1:
+                break
+            ident = row["id"]
+            previous = self.store.row(ident)
+            matched = self.evaluate(ident,
+                                    do_unicorn=quota["unicorn"] > 0,
+                                    do_proof=quota["formal"] > 0)
+            current = self.store.row(ident)
+            quota["evaluate"] -= 1
+            if (previous["empirical"] is None and current["empirical"] is not None
+                    and current["status"] != "DUPLICATE_MACHINE"):
+                quota["unicorn"] -= 1
+            if (previous["proof"] is None and current["proof"] is not None
+                    and current["status"] not in ("DUPLICATE_MACHINE", "MATCH")):
+                quota["formal"] -= 1
+            if matched:
+                print(f"MATCH: {current['path']}", flush=True)
+                return True
+        return False
+
     def sweep(self, row) -> list[str]:
         """Run measured rwsweep, preserve improving variants before next sweep."""
         ident = row["id"]
@@ -373,8 +438,18 @@ class Engine:
         budget = self.remaining()
         if budget < 3:
             return []
-        limit = min(self.a.per_parent_limit, max(1, budget - 2 - self.a.verify_combos))
-        verify = min(self.a.verify_combos, max(0, budget - 1 - limit))
+        # Reserve compiles for newly generated source combinations. A full
+        # 500-variant sweep per parent starves exactly the variants it finds.
+        reserve = min(64, max(8, budget // 10))
+        usable = budget - reserve
+        if usable < 2:
+            return []
+        limit = min(self.a.per_parent_limit, max(1, usable - 1 - self.a.verify_combos))
+        if row["status"] == "DUPLICATE_MACHINE":
+            # Explicitly enabled alternate source representations can help,
+            # but may not consume a full sweep for identical machine code.
+            limit = min(limit, 48)
+        verify = min(self.a.verify_combos, max(0, usable - 1 - limit))
         source = Path(row["path"])
         cmd = ["uv", "run", "tools/rwsweep.py", str(source),
                "--func", FUNC, "--asm-vs", str(self.store.log_dir / "original.s"),
@@ -414,6 +489,7 @@ class Engine:
         # Stage a diversity-aware selection: multiple rewrites with the same
         # scores can still produce different compiler IR and future mutations.
         outputs, score_seen = [], {}
+        crossed = 0
         for name, rd, bd, path in ranked:
             if not path.is_file():
                 continue
@@ -423,8 +499,11 @@ class Engine:
             score_seen[key] = score_seen.get(key, 0) + 1
             src = path.read_text(encoding="utf-8")
             child = self.store.add(src, ident, f"rwsweep:{name}", row["generation"] + 1, rd, bd)
-            if child != ident:
+            if child != ident and child not in outputs:
                 outputs.append(child)
+                # Generate field-dependency on the C2Scope rewrite itself.
+                # This allows wrap -> field -> alias without manual selection.
+                crossed += len(self.enqueue_field_mutations(self.store.row(child)))
             if len(outputs) >= self.a.collect_top:
                 break
         self.store.db.execute("INSERT OR REPLACE INTO sweeps VALUES (?,?,?,?,?)",
@@ -432,7 +511,8 @@ class Engine:
         self.store.db.commit()
         self.store.update(ident, expanded=1)
         print(f"  baseline rdiff={baseline[0]} bdiff={baseline[1]}; measured={measured}; "
-              f"improving proposals kept={len(outputs)}; {time.monotonic()-started:.1f}s", flush=True)
+              f"rewrites kept={len(outputs)}, field crosses={crossed}; "
+              f"{time.monotonic()-started:.1f}s", flush=True)
         return outputs
 
     def run(self) -> int:
@@ -520,11 +600,14 @@ def build_parser():
     p.add_argument("--workers", type=int, default=os.cpu_count() or 16)
     p.add_argument("--max-compiles", type=int, default=2000)
     p.add_argument("--max-generations", type=int, default=6)
-    p.add_argument("--per-parent-limit", type=int, default=500)
-    p.add_argument("--verify-combos", type=int, default=16)
+    p.add_argument("--sweeps-per-generation", type=int, default=3,
+                   help="Limit expensive C2Scope sweeps before considering newly compiled children")
+    p.add_argument("--per-parent-limit", type=int, default=160)
+    p.add_argument("--verify-combos", type=int, default=8)
     p.add_argument("--collect-top", type=int, default=24)
     p.add_argument("--per-score", type=int, default=2)
-    p.add_argument("--machine-alternatives", type=int, default=2)
+    p.add_argument("--machine-alternatives", type=int, default=1,
+                   help="Expensive sweeps per machine-code fingerprint; default skips duplicate-code parents")
     p.add_argument("--evaluate-top", type=int, default=24)
     p.add_argument("--unicorn-top", type=int, default=8)
     p.add_argument("--formal-top", type=int, default=4)
@@ -539,7 +622,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     for field in ("beam_width", "workers", "max_compiles", "max_generations",
-                  "per_parent_limit", "collect_top", "per_score", "machine_alternatives",
+                  "sweeps_per_generation", "per_parent_limit", "collect_top", "per_score", "machine_alternatives",
                   "evaluate_top", "inputs", "proof_timeout", "sweep_timeout"):
         if getattr(args, field) <= 0:
             parser.error(f"--{field.replace('_', '-')} must be positive")
