@@ -45,6 +45,12 @@ def spore_snapshot(repo: Path, prepared: Path, original_asm: Path, candidate_asm
     import fingerprint as F
     import func as FN
     from coff import Coff
+    import asm_audit
+
+    asm = asm_audit.transcribed(str(prepared)).get(f"{VA:08x}")
+    if asm:
+        print(f"Rejected assembly transcription: {asm}", flush=True)
+        return 1
 
     fp = T.fingerprint(VA)
     if fp is None or not (repo / "work/SporeApp.analysis.bin").is_file():
@@ -356,6 +362,9 @@ def run(args) -> int:
             return 0
         body = stream_model(model_cfg, messages, case / f"{tag}.llm.log",
                             args.max_tokens if args.max_tokens is not None else model_cfg.get("max_tokens", 32768))
+        if re.search(r"\\b(?:__asm|_asm|asm|__emit|_emit)\\b|__declspec\\s*\\(\\s*naked\\s*\\)|^\\s*#(?:include|pragma)", body, re.I | re.M):
+            print("Rejected inline assembly, naked function, or directive in model output", flush=True)
+            return 1
         new_path = case / f"{tag}.cpp"
         source = PREFIX + body.strip("\n") + "\n}\n"
         with new_path.open("x", encoding="utf-8") as handle:
