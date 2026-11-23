@@ -195,6 +195,75 @@ class C2ScopeFeedbackTests(unittest.TestCase):
             self.assertEqual(len(files), 1)
             self.assertIn("size 58", files[0].read_text())
 
+    def test_same_compiled_code_skips_unicorn_formal_and_second_c2trace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            candidate = root / "start.cpp"
+            candidate.write_text(PREFIX + "return param_1;\n}\n")
+            (root / "config.json").write_text(json.dumps({
+                "spore": {"repo_path": str(root / "spore")}, "llm": {"max_tokens": 12345}
+            }))
+            repo = root / "spore"
+            (repo / "tools/contrib").mkdir(parents=True)
+            (repo / "tools/contrib/check.py").touch()
+            (repo / ".venv/bin").mkdir(parents=True)
+            (repo / ".venv/bin/python").touch()
+            c2root = root / "c2scope"
+            (c2root / "tools").mkdir(parents=True)
+            (c2root / "tools/icount.py").touch()
+            snapshots = []
+            def fake_snapshot(repo, source, case, tag):
+                snapshots.append(source.name)
+                orig = case / "orig.s"
+                orig.write_text("00672cf0 push esi\n")
+                mine = case / f"{tag}.s"
+                mine.write_text("00672cf0 push ebx\n")
+                return {"fingerprint": "size 58, retail 57",
+                        "retail_bytes": 57, "candidate_bytes": 58,
+                        "retail_instructions": 24, "candidate_instructions": 26,
+                        "shape_similarity_heuristic": 0.76,
+                        "machine_sha256": "samecode",
+                        "original_asm": str(orig), "candidate_asm": str(mine),
+                        "prepared": "fixture"}
+
+            args = type("Args", (), dict(
+                candidate=candidate, spore_repo=repo, c2scope_repo=c2root, rounds=2,
+                max_tokens=None, inputs=700, proof_timeout=90, dry_run=False,
+                no_schedwant=True, resume_feedback=None,
+                reasoning_effort="minimal", reasoning_limit_chars=10000
+            ))()
+            trace_runs = []
+            prompts = []
+
+            def fake_run_c2(c2root, state, case, tag, **kwargs):
+                trace_runs.append(tag)
+                (case / f"{tag}.icount.json").write_text(json.dumps({
+                    "ours": 26, "orig": 24, "runs": []
+                }))
+                return {}
+            def fake_model(cfg, messages, log, max_tokens, **kwargs):
+                prompts.append(messages[1]["content"])
+                # First new source compiles identically; second repeats original source.
+                return "return (param_1);" if len(prompts) == 1 else "return param_1;"
+            with patch.object(C, "ROOT", root), \
+                 patch.object(C, "snapshot", side_effect=fake_snapshot), \
+                 patch.object(C, "check_candidate", return_value=type(
+                     "Compile", (), {"status": "PASS", "passed": True}
+                 )()), \
+                 patch.object(C, "run_c2scope", side_effect=fake_run_c2), \
+                 patch.object(C, "stream_model", side_effect=fake_model), \
+                 patch.object(C, "differential_test", side_effect=AssertionError("no unicorn")), \
+                 patch.object(C, "formal_test", side_effect=AssertionError("no formal")):
+                self.assertEqual(C.run(args), 1)
+            self.assertEqual(trace_runs, ["c2scope_base"])
+            self.assertEqual(len(snapshots), 2)
+            self.assertIn("same machine code", prompts[1].lower())
+            history = json.loads((root / "c2scope_runs/run001/summary.json").read_text())
+            self.assertEqual(
+                [h["verdict"] for h in history],
+                ["SAME_MACHINE_CODE", "REPEATED_SOURCE"],
+            )
+
     def test_isolated_inference_keeps_original_and_stops_on_match(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -224,6 +293,7 @@ class C2ScopeFeedbackTests(unittest.TestCase):
                     "fingerprint": "bytes differ" if source.name == "start.cpp" else "PASS",
                     "retail_bytes": 57, "candidate_bytes": 57, "retail_instructions": 24,
                     "candidate_instructions": 24, "shape_similarity_heuristic": 0.9,
+                    "machine_sha256": ("base" if source.name == "start.cpp" else "matched"),
                     "original_asm": str(orig), "candidate_asm": str(mine), "prepared": "fixture"
                 }
 
