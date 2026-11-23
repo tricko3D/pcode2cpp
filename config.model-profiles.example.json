@@ -1,0 +1,27 @@
+{
+  "profiles": {
+    "inkling-mini": {
+      "url": "http://127.0.0.1:8080/v1/chat/completions",
+      "model": "local",
+      "temperature": 0.2,
+      "max_tokens": 8192,
+      "timeout_seconds": 1800
+    },
+    "inkling-small": {
+      "url": "http://127.0.0.1:8080/v1/chat/completions",
+      "model": "local",
+      "temperature": 0.2,
+      "max_tokens": 16384,
+      "timeout_seconds": 2400
+    },
+    "deepseek": {
+      "url": "https://api.deepseek.com/chat/completions",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "temperature": 0.2,
+      "max_tokens": 8192,
+      "timeout_seconds": 1200,
+      "extra_body": {"response_format": {"type": "json_object"}}
+    }
+  }
+}
