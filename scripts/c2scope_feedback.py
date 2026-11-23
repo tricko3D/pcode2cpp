@@ -103,6 +103,7 @@ def spore_snapshot(repo: Path, prepared: Path, original_asm: Path, candidate_asm
         "callee_symbol_valid": valid_callee,
         "callee_target": "0x00672750 (assumed from synthetic declaration; not independently linked)",
         "original_asm": str(original_asm), "candidate_asm": str(candidate_asm), "flags": flags,
+        "machine_sha256": hashlib.sha256(ours.code).hexdigest(),
     }
     report.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print("Snapshot: " + json.dumps({k: result[k] for k in (
@@ -268,12 +269,16 @@ def compress_feedback(state: dict, logs: dict, case: Path, tag: str) -> str:
     return json.dumps(feedback, indent=2)
 
 
-def make_messages(body: str, original: str, candidate: str, feedback: str) -> list[dict]:
+def make_messages(body: str, original: str, candidate: str, feedback: str,
+                  failed_variants: list[str] | None = None) -> list[dict]:
     return [
         {"role": "system", "content": (
             "You are testing a single semantics-preserving C++ source rewrite against MSVC 2008 SP1 "
             "(x86, VC9/C2 15.00). No exhaustive reasoning or repeated self-checking. "
-            "Choose ONE small change suggested by the observed compiler feedback. "
+            "Choose ONE structural source-level change suggested by the observed compiler feedback. "
+            "Avoid changes that only replace indexing with dereference or add casts. "
+            "You may introduce a temporary pointer or rewrite the pointer-offset computation "
+            "to affect register allocation and scheduling, but preserve all side effects. "
             "Keep the number and order of memory writes, function calls, arguments and return unchanged. "
             "Do not introduce inline assembly, naked functions, hardcoded source pointers, or fake calls. "
             "Do not edit the fixed source prefix, function signature or synthetic VC9 wrapper. "
@@ -290,6 +295,9 @@ def make_messages(body: str, original: str, candidate: str, feedback: str) -> li
             "Retail assembly:\n" + original + "\n\n"
             "Current VC9 assembly:\n" + candidate + "\n\n"
             "Measured C2Scope feedback:\n" + feedback + "\n\n"
+            "Previous attempts that produced identical machine code or repeated source:\n" +
+            "\n".join(failed_variants or ["(none)"]) +
+            "\nDo not repeat those changes or cosmetic rewrites. "
             "Now return the entire revised C++ body in the specified JSON format."
         )},
     ]
@@ -438,13 +446,20 @@ def run(args) -> int:
         print("Already byte-exact; no inference needed", flush=True)
         return 0
     seen = {hashlib.sha256(candidate.read_bytes()).hexdigest()}
+    seen_machine = {state["machine_sha256"]}
     model_cfg = config["llm"]
     history = []
+    failed_variants: list[str] = []
+    previous_feedback: str | None = None
     for round_no in range(1, args.rounds + 1):
         tag = f"{args.candidate.stem}_c2scope_{round_no:03d}"
         previous_tag = "c2scope_base" if round_no == 1 else f"{args.candidate.stem}_c2scope_{round_no-1:03d}"
         print(f"\n===== C2Scope feedback, round {round_no}/{args.rounds} =====", flush=True)
-        if round_no == 1 and args.resume_feedback is not None:
+        if previous_feedback is not None:
+            print("Reusing C2Scope feedback: preceding rewrite did not change the compiled code.", flush=True)
+            feedback = previous_feedback
+            logs = {}
+        elif round_no == 1 and args.resume_feedback is not None:
             previous = args.resume_feedback.expanduser().resolve()
             saved = json.loads(previous.read_text(encoding="utf-8"))
             if Path(saved["candidate"]).resolve() != candidate:
@@ -460,7 +475,8 @@ def run(args) -> int:
             feedback = compress_feedback(state, logs, case, previous_tag)
         messages = make_messages(extract_body(candidate.read_text(encoding="utf-8")),
                                  Path(state["original_asm"]).read_text(encoding="utf-8"),
-                                 Path(state["candidate_asm"]).read_text(encoding="utf-8"), feedback)
+                                 Path(state["candidate_asm"]).read_text(encoding="utf-8"),
+                                 feedback, failed_variants)
         prompt_path = case / f"{tag}.feedback.json"
         prompt_path.write_text(json.dumps({"candidate": str(candidate), "messages": messages,
                                           "c2scope_logs": logs}, indent=2), encoding="utf-8")
@@ -483,8 +499,15 @@ def run(args) -> int:
             handle.write(source)
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
         if digest in seen:
-            print("Model repeated an earlier candidate, stopping to avoid duplicate inference", flush=True)
-            return 1
+            note = "Previously submitted C++ source repeated"
+            print(f"Round {round_no}: {note}. Skipping all verifiers.", flush=True)
+            failed_variants.append(note + ": " + body[:550])
+            previous_feedback = feedback
+            history.append({"round": round_no, "candidate": str(new_path),
+                            "verdict": "REPEATED_SOURCE"})
+            (case / "summary.json").write_text(json.dumps(history, indent=2),
+                                               encoding="utf-8")
+            continue
         seen.add(digest)
         clang = check_candidate(new_path)
         if not clang.passed:
@@ -495,6 +518,23 @@ def run(args) -> int:
         except Exception as exc:
             print(f"Round {round_no}: VC9 check failed: {exc}")
             return 1
+        current_machine = updated["machine_sha256"]
+        if current_machine in seen_machine:
+            note = "VC9 generated the same machine code as an earlier candidate"
+            print(f"Round {round_no}: {note}. Skipping Unicorn and formal proof.", flush=True)
+            changes = "".join(difflib.unified_diff(
+                candidate.read_text(encoding="utf-8").splitlines(True),
+                new_path.read_text(encoding="utf-8").splitlines(True),
+            ))
+            failed_variants.append(note + "; rejected rewrite: " + changes[-800:])
+            previous_feedback = feedback
+            history.append({"round": round_no, "candidate": str(new_path),
+                            "verdict": "SAME_MACHINE_CODE", "machine_sha256": current_machine})
+            (case / "summary.json").write_text(json.dumps(history, indent=2),
+                                               encoding="utf-8")
+            continue
+        seen_machine.add(current_machine)
+        previous_feedback = None
         delta = round(updated["shape_similarity_heuristic"] - state["shape_similarity_heuristic"], 5)
         print(f"Round {round_no} VC9: {updated['fingerprint']}, "
               f"{updated['candidate_bytes']} bytes, shape score {updated['shape_similarity_heuristic']} "
