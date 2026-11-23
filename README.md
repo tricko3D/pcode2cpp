@@ -101,6 +101,20 @@ print(cpp)
 
 The Ghidra exporter directly opens an existing project and program with the PyGhidra API. It does **not** create projects, import binaries or install PDB data. When a function is missing, it can analyze and save that existing project; it never guesses a function definition.
 
+## Standalone compact prompt generator
+
+The full Ghidra JSON remains the canonical, unmodified export. To build a **readable, model-friendly Markdown prompt** from an already exported function, without launching Ghidra or calling an LLM:
+
+```bash
+python scripts/build_prompt.py cases/00672cf0/context.json
+# Or use a function JSON from the bulk dataset:
+python scripts/build_prompt.py data/retail-contexts/00672cf0.json
+```
+
+The script includes the current `prompts/reconstruct.txt` system instruction, decompiled C, original assembly, compact SSA High P-code and control flow, signatures, calls, globals, and useful referenced type layouts. Redundant JSON wrappers, machine-byte strings, and low-value type metadata are omitted. Very large type layouts are bounded, with omissions labeled. It writes `cases/00672cf0/prompt_v001.md`, then `prompt_v002.md` on the next run, preserving prior versions. Use `--system-prompt` to select a different instruction file and `--output-dir` to change the destination.
+
+**This is a prompt generator only.** It does not make inference requests, rewrite the notebook, or change `translate.py`, which still sends full JSON unless deliberately changed later.
+
 ## Optional verification integration
 
 The core only handles Ghidra context → local C++. A small standard `VerificationBackend` interface in `pcode2cpp/verification.py` accepts a function address and a prepared source-file path, returning one of:
