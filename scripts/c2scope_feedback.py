@@ -197,8 +197,22 @@ def run_c2scope(c2root: Path, state: dict, case: Path, tag: str, sched: bool = T
             "ok": result.returncode == 0, "log": str(log), "detail": full[-1200:],
             "fallback_without_merges": fallback_used,
         }
-        if name == "icount" and result.returncode:
-            raise RuntimeError(f"C2Scope icount exited {result.returncode}: {full[-1200:]}")
+        if name == "icount":
+            if result.returncode:
+                raise RuntimeError(f"C2Scope icount exited {result.returncode}: {full[-1200:]}")
+            report = case / f"{tag}.icount.json"
+            if not report.is_file():
+                raise RuntimeError(
+                    f"C2Scope icount exited successfully without a JSON report: {report}"
+                )
+            try:
+                data = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f"Invalid C2Scope icount JSON report: {report}: {exc}") from exc
+            if not isinstance(data, dict) or "runs" not in data:
+                raise RuntimeError(
+                    f"C2Scope icount report is missing instruction-difference runs: {report}"
+                )
     return logs
 
 
