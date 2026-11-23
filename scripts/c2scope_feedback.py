@@ -217,6 +217,7 @@ def run_c2scope(c2root: Path, state: dict, case: Path, tag: str, sched: bool = T
 
 
 def compress_feedback(state: dict, logs: dict, case: Path, tag: str) -> str:
+    """Forward measured compiler evidence, not a long unfiltered tool transcript."""
     feedback = {
         "vc9": {k: state[k] for k in ("fingerprint", "retail_bytes", "candidate_bytes",
                                     "retail_instructions", "candidate_instructions",
@@ -224,66 +225,96 @@ def compress_feedback(state: dict, logs: dict, case: Path, tag: str) -> str:
         "c2scope": {},
     }
     path = case / f"{tag}.icount.json"
-    if path.is_file():
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        feedback["c2scope"]["icount"] = {
-            "ours": raw.get("ours"), "original": raw.get("orig"),
-            "runs": [{"kind": r.get("kind"), "source_line": r.get("line"),
-                      "source": r.get("src"), "verdict": r.get("verdict"),
-                      "lever": r.get("lever"),
-                      "items": [{"asm": i.get("ins"), "verdict": i.get("verdict"),
-                                 "origin": i.get("origin"), "why": i.get("why")}
-                                for i in r.get("items", [])[:5]]}
-                     for r in raw.get("runs", [])[:15]],
-            "hints": raw.get("hints", [])[:5],
-            "lift": {k: raw["lift"].get(k) for k in ("self", "n", "text", "error")}
-                    if isinstance(raw.get("lift"), dict) else None,
+    if not path.is_file():
+        raise RuntimeError(f"Missing C2Scope instruction-count report: {path}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("runs"), list):
+        raise RuntimeError(f"C2Scope instruction-count report malformed: {path}")
+    feedback["c2scope"]["icount"] = {
+        "ours": raw.get("ours"), "original": raw.get("orig"),
+        "runs": [
+            {"kind": r.get("kind"), "source_line": r.get("line"),
+             "source": str(r.get("src") or "")[:120], "verdict": r.get("verdict"),
+             "lever": str(r.get("lever") or "")[:300],
+             "items": [{"asm": it.get("ins"), "reason": it.get("verdict"),
+                        "origin": str(it.get("origin") or "")[:130]}
+                       for it in r.get("items", [])[:3]]}
+            for r in raw["runs"][:8]
+        ],
+        "hints": [str(h)[:160] for h in raw.get("hints", [])[:3]],
+    }
+    lv = raw.get("lift")
+    if isinstance(lv, dict):
+        feedback["c2scope"]["icount"]["lift"] = {
+            "self": lv.get("self"), "differences": lv.get("n"),
+            "finding": str(lv.get("text") or lv.get("error") or "")[:650],
         }
+
     for name in ("regs", "schedwant"):
         entry = logs.get(name)
         if entry and entry["ok"]:
-            feedback["c2scope"][name] = Path(entry["log"]).read_text(encoding="utf-8")[:9000]
+            lines = Path(entry["log"]).read_text(encoding="utf-8").splitlines()
+            if name == "regs":
+                idx = next((i for i, line in enumerate(lines)
+                            if "pop" in line and "prio" in line and "reg" in line), None)
+                # Retain the actual allocation table, not 9000 characters
+                # of subsequent diagnostic narration.
+                excerpt = lines[idx:idx+10] if idx is not None else lines[:24]
+                feedback["c2scope"][name] = "\n".join(excerpt)[:2200]
+            else:
+                feedback["c2scope"][name] = "\n".join(lines[:32])[:1800]
         elif entry:
-            feedback["c2scope"][name + "_status"] = "unavailable: " + entry["detail"][-300:]
+            feedback["c2scope"][name + "_status"] = "unavailable: " + entry["detail"][-200:]
     return json.dumps(feedback, indent=2)
 
 
 def make_messages(body: str, original: str, candidate: str, feedback: str) -> list[dict]:
     return [
         {"role": "system", "content": (
-            "You are tuning C++ source to reproduce MSVC 2008 SP1 (VC9/C2 15.00) x86 code. "
-            "Preserve all program behavior, memory effects, call arguments, return and calling convention. "
-            "Use observed C2Scope traces and register/scheduler information, not generic compiler guesses. "
-            "Prefer one minimal source-level rewrite per response. "
-            "No inline assembly, byte literals, fake call addresses or hardcoded source pointers. "
-            "The fixed C++ prefix and synthetic member-function VC9 wrapper cannot be edited. "
-            "Return ONLY schema JSON with one string field 'body' containing complete revised C++ statements "
-            "without braces or commentary."
+            "You are testing a single semantics-preserving C++ source rewrite against MSVC 2008 SP1 "
+            "(x86, VC9/C2 15.00). No exhaustive reasoning or repeated self-checking. "
+            "Choose ONE small change suggested by the observed compiler feedback. "
+            "Keep the number and order of memory writes, function calls, arguments and return unchanged. "
+            "Do not introduce inline assembly, naked functions, hardcoded source pointers, or fake calls. "
+            "Do not edit the fixed source prefix, function signature or synthetic VC9 wrapper. "
+            "You cannot know if a change matches bytes without compiling it; the test harness will decide. "
+            "Return the COMPLETE revised function body as JSON with exactly one string field 'body'. "
+            "Do not include enclosing braces, reasoning or commentary."
         )},
         {"role": "user", "content": (
-            "Target Spore function 0x00672cf0, VC9 /O2 /MD /Gy /EHsc /TP. "
-            "The baseline passed 220 valid Unicorn differential executions, "
-            "but angr refuted call-time ESP equality and the bytes do not match. "
-            "Keep the original behavior and synthetic callee identity.\n\n"
-            "Existing body:\n" + body + "\n\n"
-            "Original retail disassembly:\n" + original + "\n\n"
-            "Current VC9 disassembly:\n" + candidate + "\n\n"
-            "C2Scope findings from the actual compiler:\n" + feedback + "\n\n"
-            "Attempt one source-level byte-match improvement. Do not change the fixed source prefix."
+            "Goal: change ONE C++ expression while retaining the function's behavior and source order. "
+            "Previous candidate compiles and passes 220 valid Unicorn tests, "
+            "but has 58 bytes rather than retail's 57; angr reported call-time ESP difference. "
+            "Propose one testable change, not a guaranteed match.\n\n"
+            "C++ body:\n" + body + "\n\n"
+            "Retail assembly:\n" + original + "\n\n"
+            "Current VC9 assembly:\n" + candidate + "\n\n"
+            "Measured C2Scope feedback:\n" + feedback + "\n\n"
+            "Now return the entire revised C++ body in the specified JSON format."
         )},
     ]
 
 
-def stream_model(cfg: dict, messages: list[dict], log: Path, max_tokens: int) -> str:
+def stream_model(cfg: dict, messages: list[dict], log: Path, max_tokens: int,
+                 reasoning_effort: str = "minimal",
+                 reasoning_limit_chars: int = 10000) -> str:
+    """One bounded local request. Preserve reasoning in a log, not on stdout."""
     payload = {
         "model": cfg.get("model", "local"), "messages": messages,
-        "temperature": cfg.get("temperature", 0), "max_tokens": max_tokens,
+        # Inkling 2 Mini's published sampling configuration uses temp=1.
+        "temperature": cfg.get("c2scope_temperature", 1.0),
+        "max_tokens": max_tokens,
+        "chat_template_kwargs": {"reasoning_effort": reasoning_effort},
         "stream": True, "response_format": {"type": "json_schema", "schema": SCHEMA},
     }
     req = Request(cfg.get("url", "http://127.0.0.1:8080/v1/chat/completions"),
                   data=json.dumps(payload).encode("utf-8"),
                   headers={"Content-Type": "application/json"})
     parts, finish, section = [], None, None
+    reasoning_chars, reasoning_shown = 0, 0
+    print(f"Inkling: reasoning_effort={reasoning_effort}; "
+          f"output budget={max_tokens} tokens; "
+          f"reasoning limit={reasoning_limit_chars} chars", flush=True)
     try:
         with urlopen(req, timeout=cfg.get("timeout_seconds", 1800)) as response:
             with log.open("x", encoding="utf-8") as sink:
@@ -299,19 +330,34 @@ def stream_model(cfg: dict, messages: list[dict], log: Path, max_tokens: int) ->
                         raise RuntimeError(str(event["error"]))
                     for choice in event.get("choices", ()):
                         delta = choice.get("delta") or {}
-                        for typ, text in (("Reasoning", delta.get("reasoning_content") or delta.get("reasoning") or ""),
-                                          ("JSON", delta.get("content") or "")):
-                            if not text:
+                        for typ, piece in (
+                            ("Reasoning", delta.get("reasoning_content") or delta.get("reasoning") or ""),
+                            ("JSON", delta.get("content") or ""),
+                        ):
+                            if not piece:
                                 continue
                             if section != typ:
                                 section = typ
-                                print(f"\n[{typ}]\n", flush=True)
-                                sink.write(f"\n[{typ}]\n")
-                            sink.write(text)
+                                sink.write(f"\n[{section}]\n")
+                                print(f"\n[{section}]\n", flush=True)
+                            sink.write(piece)
                             sink.flush()
-                            print(text, end="", flush=True)
                             if typ == "JSON":
-                                parts.append(text)
+                                parts.append(piece)
+                                print(piece, end="", flush=True)
+                            else:
+                                reasoning_chars += len(piece)
+                                if reasoning_shown < 400:
+                                    visible = piece[:400 - reasoning_shown]
+                                    print(visible, end="", flush=True)
+                                    reasoning_shown += len(visible)
+                                    if reasoning_shown >= 400:
+                                        print("\n[Further reasoning saved to transcript only]", flush=True)
+                                if reasoning_chars > reasoning_limit_chars and not parts:
+                                    raise RuntimeError(
+                                        "Inkling exceeded the bounded reasoning budget without starting "
+                                        f"JSON ({reasoning_chars} chars). Transcript: {log}"
+                                    )
                         finish = choice.get("finish_reason") or finish
     except HTTPError as exc:
         raise RuntimeError(f"llama.cpp rejected request ({exc.code}): " +
@@ -320,7 +366,10 @@ def stream_model(cfg: dict, messages: list[dict], log: Path, max_tokens: int) ->
         raise RuntimeError(f"llama.cpp connection failed: {exc}") from exc
     print(f"\nFinish reason: {finish}; transcript: {log}", flush=True)
     if not parts or finish not in (None, "stop"):
-        raise RuntimeError("Model output missing or truncated; no candidate accepted")
+        raise RuntimeError(
+            f"Inkling produced no complete JSON body (finish={finish}); "
+            f"reasoning={reasoning_chars} chars; transcript: {log}"
+        )
     try:
         body = json.loads("".join(parts))["body"]
     except (ValueError, TypeError, KeyError) as exc:
@@ -395,8 +444,20 @@ def run(args) -> int:
         tag = f"{args.candidate.stem}_c2scope_{round_no:03d}"
         previous_tag = "c2scope_base" if round_no == 1 else f"{args.candidate.stem}_c2scope_{round_no-1:03d}"
         print(f"\n===== C2Scope feedback, round {round_no}/{args.rounds} =====", flush=True)
-        logs = run_c2scope(c2root, state, case, previous_tag, sched=not args.no_schedwant)
-        feedback = compress_feedback(state, logs, case, previous_tag)
+        if round_no == 1 and args.resume_feedback is not None:
+            previous = args.resume_feedback.expanduser().resolve()
+            saved = json.loads(previous.read_text(encoding="utf-8"))
+            if Path(saved["candidate"]).resolve() != candidate:
+                raise ValueError(
+                    f"Saved C2Scope feedback targets {saved['candidate']}, not {candidate}"
+                )
+            logs = saved["c2scope_logs"]
+            print(f"Reusing completed C2Scope traces from {previous.parent}", flush=True)
+            feedback = compress_feedback(state, logs, previous.parent, "c2scope_base")
+        else:
+            logs = run_c2scope(c2root, state, case, previous_tag,
+                               sched=not args.no_schedwant)
+            feedback = compress_feedback(state, logs, case, previous_tag)
         messages = make_messages(extract_body(candidate.read_text(encoding="utf-8")),
                                  Path(state["original_asm"]).read_text(encoding="utf-8"),
                                  Path(state["candidate_asm"]).read_text(encoding="utf-8"), feedback)
@@ -406,8 +467,13 @@ def run(args) -> int:
         if args.dry_run:
             print(f"Feedback prepared without inference: {prompt_path}", flush=True)
             return 0
-        body = stream_model(model_cfg, messages, case / f"{tag}.llm.log",
-                            args.max_tokens if args.max_tokens is not None else model_cfg.get("max_tokens", 32768))
+        body = stream_model(
+            model_cfg, messages, case / f"{tag}.llm.log",
+            args.max_tokens if args.max_tokens is not None else min(
+                4096, model_cfg.get("max_tokens", 4096)),
+            reasoning_effort=args.reasoning_effort,
+            reasoning_limit_chars=args.reasoning_limit_chars,
+        )
         if re.search(r"\b(?:__asm|_asm|asm|__emit|_emit)\b|__declspec\s*\(\s*naked\s*\)|^\s*#(?:include|pragma)", body, re.I | re.M):
             print("Rejected inline assembly, naked function, or directive in model output", flush=True)
             return 1
@@ -460,7 +526,15 @@ def main() -> int:
     parser.add_argument("--spore-repo", type=Path)
     parser.add_argument("--c2scope-repo", type=Path, default=Path.home() / "c2scope")
     parser.add_argument("--rounds", type=int, default=3)
-    parser.add_argument("--max-tokens", type=int, default=None, help="Override config.json max_tokens")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Default min(config.json max_tokens, 4096)")
+    parser.add_argument("--reasoning-effort", default="minimal",
+                        choices=("none", "minimal", "low", "medium", "high", "xhigh"),
+                        help="Inkling template thinking level (default: minimal)")
+    parser.add_argument("--reasoning-limit-chars", type=int, default=10000,
+                        help="Abort an output-only reasoning loop after this many chars")
+    parser.add_argument("--resume-feedback", type=Path,
+                        help="Reuse C2Scope traces from a previous round-1 *.feedback.json")
     parser.add_argument("--inputs", type=int, default=700)
     parser.add_argument("--proof-timeout", type=int, default=90)
     parser.add_argument("--dry-run", action="store_true", help="Gather real C2Scope evidence, no model request")
@@ -479,7 +553,9 @@ def main() -> int:
         if not prepared.is_relative_to((repo / "work/pcode2cpp_checks").resolve()):
             parser.error("Worker only accepts ignored Spore work sources")
         return spore_snapshot(repo, prepared, args.original_asm, args.candidate_asm, args.report)
-    if args.rounds < 1 or (args.max_tokens is not None and args.max_tokens < 1) or args.inputs < 200 or args.proof_timeout < 1:
+    if (args.rounds < 1 or (args.max_tokens is not None and args.max_tokens < 1)
+            or args.reasoning_limit_chars < 100 or args.inputs < 200
+            or args.proof_timeout < 1):
         parser.error("rounds/max-tokens/proof-timeout must be positive and inputs >=200")
     try:
         return run(args)
