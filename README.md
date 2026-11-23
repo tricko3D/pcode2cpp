@@ -101,19 +101,39 @@ print(cpp)
 
 The Ghidra exporter directly opens an existing project and program with the PyGhidra API. It does **not** create projects, import binaries or install PDB data. When a function is missing, it can analyze and save that existing project; it never guesses a function definition.
 
-## Standalone compact prompt generator
+## Standalone evidence-rich prompt generator
 
-The full Ghidra JSON remains the canonical, unmodified export. To build a **readable, model-friendly Markdown prompt** from an already exported function, without launching Ghidra or calling an LLM:
+The Ghidra JSON remains the canonical export. To create a versioned, readable
+Markdown prompt **without launching Ghidra or calling an LLM**:
 
 ```bash
 python scripts/build_prompt.py cases/00672cf0/context.json
-# Or use a function JSON from the bulk dataset:
+# Equivalent input from the bulk dataset:
 python scripts/build_prompt.py data/retail-contexts/00672cf0.json
 ```
 
-The script includes the current `prompts/reconstruct.txt` system instruction, decompiled C, original assembly, compact SSA High P-code and control flow, signatures, calls, globals, and useful referenced type layouts. Redundant JSON wrappers, machine-byte strings, and low-value type metadata are omitted. Very large type layouts are bounded, with omissions labeled. It writes `cases/00672cf0/prompt_v001.md`, then `prompt_v002.md` on the next run, preserving prior versions. Use `--system-prompt` to select a different instruction file and `--output-dir` to change the destination.
+The script includes the current `prompts/reconstruct.txt` system instruction,
+full decompiled C, original assembly, High P-code with block flow, signatures,
+calls, globals, and referenced type layouts in human-readable sections.
+It removes verbose JSON wrappers rather than dropping code evidence.
 
-**This is a prompt generator only.** It does not make inference requests, rewrite the notebook, or change `translate.py`, which still sends full JSON unless deliberately changed later.
+**Direct callee enrichment:** For each direct target in the caller's `calls`
+records, the script looks for a separate exported context in
+`data/retail-contexts/<address>.json` by default. When present and from the
+same program, it includes that callee's **full decompiled C, full assembly,
+full High P-code, parameters, locals, calls, globals and referenced types**.
+This resolves cases where the caller's Ghidra-exported callee signature is
+stale or incomplete. Callees are included once each, one hop deep, with
+no recursive expansion; missing/unreadable targets are explicitly labeled.
+For a different dataset, use `--callees-dir PATH`.
+
+Output files are versioned (`cases/00672cf0/prompt_v001.md`,
+`prompt_v002.md`, etc.) and never overwritten. Use `--system-prompt`
+and `--output-dir` to change the defaults. Because full callee evidence can
+be large, check the generated prompt size against the model's context window.
+
+**This command only builds the prompt.** It does not invoke Inkling,
+change `translate.py`, or modify the analyzed Ghidra project.
 
 ## Optional verification integration
 
