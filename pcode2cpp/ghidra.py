@@ -9,7 +9,7 @@ from .context import load_context
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "ghidra_scripts" / "export_function.py"
-RUNNER = ROOT / "pcode2cpp" / "_ghidra_export_runner.py"
+RUNNER_MODULE = "pcode2cpp._ghidra_export_runner"
 
 
 def _existing_project_directory(parent: Path, name: str) -> Path:
@@ -52,7 +52,7 @@ def export_function(address: int | str, destination: str | Path, settings: dict)
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        sys.executable, str(RUNNER),
+        sys.executable, "-m", RUNNER_MODULE,
         "--project-directory", str(project_dir),
         "--project-name", name,
         "--program-name", program_name,
@@ -66,7 +66,7 @@ def export_function(address: int | str, destination: str | Path, settings: dict)
     # An old export must never be mistaken for a successful fresh export.
     dst.unlink(missing_ok=True)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
-                          check=False, env=os.environ.copy())
+                          check=False, env=os.environ.copy(), cwd=str(ROOT))
     if proc.returncode != 0 or not dst.is_file():
         raise RuntimeError(f"Ghidra export failed (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
 
