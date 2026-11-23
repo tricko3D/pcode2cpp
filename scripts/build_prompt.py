@@ -14,10 +14,6 @@ sys.path.insert(0, str(ROOT))
 from pcode2cpp.context import load_context  # noqa: E402
 
 FENCE = chr(96) * 3
-MAX_LAYOUTS = 48
-MAX_FIELDS = 32
-MAX_ENUM_VALUES = 32
-
 
 def code_block(language, contents):
     return f"{FENCE}{language}\n{contents.rstrip()}\n{FENCE}"
@@ -124,30 +120,88 @@ def format_types(context):
         if item.get("fields") or item.get("values") or item.get("underlying")
     ]
     lines = []
-    for item in useful[:MAX_LAYOUTS]:
+    for item in useful:
         name = item.get("path") or item.get("name") or "unknown type"
         lines.append(f"{name} ({item.get('kind', 'type')}, {item.get('size', '?')} bytes)")
         fields = item.get("fields", [])
-        for field in fields[:MAX_FIELDS]:
+        for field in fields:
             lines.append(
                 f"  +{field.get('offset', '?')}: {type_name(field.get('type'))} "
                 f"{field.get('name') or '<unnamed>'}"
             )
-        if len(fields) > MAX_FIELDS:
-            lines.append(f"  ... {len(fields) - MAX_FIELDS} more fields in original JSON")
         values = item.get("values", [])
-        for value in values[:MAX_ENUM_VALUES]:
+        for value in values:
             lines.append(f"  {value.get('name', '?')} = {value.get('value', '?')}")
-        if len(values) > MAX_ENUM_VALUES:
-            lines.append(f"  ... {len(values) - MAX_ENUM_VALUES} more enum values in original JSON")
         if item.get("underlying"):
             lines.append(f"  alias of {type_name(item['underlying'])}")
-    if len(useful) > MAX_LAYOUTS:
-        lines.append(f"... {len(useful) - MAX_LAYOUTS} further definitions in original JSON")
     return "\n".join(lines)
 
 
-def render_prompt(context, system_prompt):
+def read_direct_callees(context, directory):
+    """Resolve one hop of direct target addresses against saved full exports."""
+    found = {}
+    missing = []
+    main_address = int(context["function"]["address"], 16)
+    checked = set()
+    for call in context["calls"]:
+        target = call.get("target")
+        if not target or call.get("resolution") == "unresolved_indirect_or_unreferenced":
+            continue
+        try:
+            address = int(target, 16)
+        except (ValueError, TypeError):
+            missing.append((str(target), "non-numeric target"))
+            continue
+        if address == main_address or address in checked:
+            continue
+        checked.add(address)
+        path = directory / f"{address:08x}.json"
+        if not path.is_file():
+            missing.append((target, "export not found"))
+            continue
+        try:
+            callee = load_context(path)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            missing.append((target, f"invalid export: {exc}"))
+            continue
+        if int(callee["function"]["address"], 16) != address:
+            missing.append((target, "file address does not match target"))
+            continue
+        if callee.get("program", {}).get("name") != context.get("program", {}).get("name"):
+            missing.append((target, "program identity differs"))
+            continue
+        found[address] = callee
+    return found, missing
+
+
+def format_direct_callee(callee):
+    """Include full readable evidence for one direct callee, without recursion."""
+    fn = callee["function"]
+    details = [
+        f"### {fn.get('name', '?')} at {fn['address']}",
+        (
+            f"Saved signature: {fn.get('signature', '?')}\n"
+            f"Calling convention metadata: {fn.get('calling_convention', '?')}\n"
+            "The saved signature can be incomplete; compare the decompiled C and "
+            "callee assembly before deciding the ABI."
+        ),
+    ]
+    items = (
+        ("Parameters and locals", format_variables(fn)),
+        ("Complete decompiled C", code_block("c", callee["pseudocode"])),
+        ("Complete x86 assembly", code_block("asm", format_assembly(callee))),
+        ("Complete High P-code and control flow", code_block("text", format_pcode(callee))),
+        ("Callee calls and targets (not expanded further)", format_calls(callee)),
+        ("Referenced globals", format_globals(callee)),
+        ("Referenced type layouts and enums", format_types(callee)),
+    )
+    for heading, contents in items:
+        if contents:
+            details.extend((f"#### {heading}", contents))
+    return "\n\n".join(details)
+
+
+def render_prompt(context, system_prompt, direct_callees=None, missing_callees=None):
     function = context["function"]
     program = context.get("program", {})
     header = [
@@ -183,6 +237,21 @@ def render_prompt(context, system_prompt):
         if content:
             sections.extend((f"## {heading}", content))
 
+    if direct_callees or missing_callees:
+        sections.append("## Direct callee evidence (one level, no recursive expansion)")
+        sections.append(
+            "The following data comes from separate Ghidra exports of directly called "
+            "functions. Stored function signatures may be incomplete or stale; "
+            "the callee's decompiled C and assembly provide additional evidence."
+        )
+        for address, callee in sorted((direct_callees or {}).items()):
+            sections.append(format_direct_callee(callee))
+        if missing_callees:
+            sections.append("### Direct call targets without usable exports")
+            sections.extend(
+                f"- {target}: {reason}" for target, reason in missing_callees
+            )
+
     return "\n\n".join(sections) + "\n"
 
 
@@ -201,6 +270,10 @@ def main():
         "--output-dir", type=Path,
         help="Destination (default: cases/<function-address>/)",
     )
+    parser.add_argument(
+        "--callees-dir", type=Path, default=ROOT / "data" / "retail-contexts",
+        help="Directory of exported callee JSON files (default: data/retail-contexts)",
+    )
     args = parser.parse_args()
     context = load_context(args.context.expanduser())
     instruction = args.system_prompt.expanduser().read_text(encoding="utf-8")
@@ -213,7 +286,8 @@ def main():
         if args.output_dir is not None else ROOT / "cases" / f"{address:08x}"
     )
     destination.mkdir(parents=True, exist_ok=True)
-    content = render_prompt(context, instruction)
+    callees, missing = read_direct_callees(context, args.callees_dir.expanduser())
+    content = render_prompt(context, instruction, callees, missing)
 
     # Exclusive creation ensures prompts from previous runs cannot be overwritten.
     version = 1
@@ -228,6 +302,10 @@ def main():
 
     print(f"Created {path}")
     print(f"Prompt characters: {len(content):,}")
+    print(
+        f"Direct callees included: {len(callees)}; "
+        f"unavailable direct exports: {len(missing)}"
+    )
 
 
 if __name__ == "__main__":
