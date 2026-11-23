@@ -62,11 +62,35 @@ def export_function(address: int | str, destination: str | Path, settings: dict)
     ]
     if settings.get("install_dir"):
         cmd.extend(["--install-dir", str(Path(settings["install_dir"]).expanduser().resolve())])
+    analyze_if_missing = settings.get("analyze_if_missing", True)
+    if not isinstance(analyze_if_missing, bool):
+        raise ValueError("ghidra.analyze_if_missing must be a boolean")
+    if not analyze_if_missing:
+        cmd.append("--no-auto-analysis")
+
+    timeout = settings.get("timeout_seconds", 7200 if analyze_if_missing else 900)
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError("ghidra.timeout_seconds must be a positive number")
+
+    print(f"pcode2cpp: Opening {name}/{program_name} at 0x{addr:08x}. "
+          f"Analysis if missing: {analyze_if_missing}.", flush=True)
 
     # An old export must never be mistaken for a successful fresh export.
     dst.unlink(missing_ok=True)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
-                          check=False, env=os.environ.copy(), cwd=str(ROOT))
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            check=False, env=os.environ.copy(), cwd=str(ROOT),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Ghidra export exceeded {timeout:g} seconds. The project may still "
+            "need analysis; no candidate C++ was generated."
+        ) from exc
+    if proc.stdout:
+        for line in proc.stdout.splitlines():
+            if line.startswith("pcode2cpp:"):
+                print(line, flush=True)
     if proc.returncode != 0 or not dst.is_file():
         raise RuntimeError(f"Ghidra export failed (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}")
 
