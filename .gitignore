@@ -4,6 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
 config.json
+config.model-profiles.json
 cases/
 *.egg-info/
 build/
