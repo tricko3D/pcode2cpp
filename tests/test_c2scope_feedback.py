@@ -1,6 +1,7 @@
 """Offline tests for the C2Scope feedback experiment; no game or model required."""
 import io
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -23,6 +24,49 @@ class C2ScopeFeedbackTests(unittest.TestCase):
             self.assertIn(C.FUNC, cmd)
         self.assertIn("--allow-local", cmds["icount"])
         self.assertIn("--asm-vs", cmds["schedwant"])
+
+    def test_unresolvable_merge_hook_uses_local_icount_without_merges(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            project = base / "pcode2cpp"
+            shim = project / "scripts/c2scope_icount_fallback.py"
+            shim.parent.mkdir(parents=True)
+            shim.touch()
+            case = base / "artifacts"
+            case.mkdir()
+            c2root = base / "c2scope"
+            c2root.mkdir()
+            original = case / "retail.s"
+            original.write_text("00672cf0 push esi\\n")
+            state = {"prepared": "/spore/work/candidate.cpp", "original_asm": str(original)}
+            output = [
+                subprocess.CompletedProcess([], 1, "", (
+                    "no c2 function ?FgDoLateFlowOpts@@YIXPAUtagFUNC@@W4FG_MERGE_ENUM@@@Z\\n"
+                )),
+                subprocess.CompletedProcess([], 0, "## function: ours 26 orig 24\\n", ""),
+                subprocess.CompletedProcess([], 0, "register priority report\\n", ""),
+            ]
+            calls = []
+
+            def fake_run(args, **kwargs):
+                calls.append((args, kwargs))
+                return output[len(calls) - 1]
+
+            with patch.object(C, "ROOT", project), patch.object(C.subprocess, "run", fake_run):
+                logs = C.run_c2scope(c2root, state, case, "base", sched=False)
+
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(calls[0][0][:3], ["uv", "run", "tools/icount.py"])
+            self.assertEqual(calls[1][0][:3], ["uv", "run", "python"])
+            self.assertEqual(calls[1][0][3], str(shim))
+            self.assertIn("--c2", calls[1][0])
+            self.assertEqual(calls[1][1]["env"]["C2TRACE_REMOTE"], "0")
+            self.assertNotIn("VIRTUAL_ENV", calls[1][1]["env"])
+            self.assertTrue(logs["icount"]["fallback_without_merges"])
+            self.assertTrue(logs["icount"]["ok"])
+            log = (case / "base.icount.log").read_text()
+            self.assertIn("no c2 function", log)
+            self.assertIn("## function: ours 26 orig 24", log)
 
     def test_compact_feedback_extracts_actual_icount_findings(self):
         with tempfile.TemporaryDirectory() as temp:
