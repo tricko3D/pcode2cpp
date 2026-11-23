@@ -81,6 +81,57 @@ def field_dependency_mutations(source: str):
                 yield f"field:{dest.group('ptr')}[{dest.group('slot')}]<-{prior.group('slot')}", output
 
 
+# Conservative, source-level scheduling hypotheses. These are deliberately
+# verified independently: even field stores that look disjoint can alias stack
+# memory or other fields under the prover's unconstrained machine model.
+FIELD_LINE_RE = re.compile(
+    rf"^(?P<indent>[ \t]*)(?P<lhs>(?:hs_bind\(\s*param_1\s*\)|param_1)"
+    rf"\s*\[\s*(?P<slot>{NUM})\s*\])\s*=\s*(?P<rhs>[^;\n]+);[ \t]*$"
+)
+FIELD_REF_RE = re.compile(
+    rf"(?:hs_bind\(\s*param_1\s*\)|param_1)\s*\[\s*(?P<slot>{NUM})\s*\]"
+)
+
+
+def field_store_order_mutations(source: str):
+    """Swap adjacent, direct field stores as *unverified* scheduling probes.
+
+    Do not move a store past an expression that reads the value it writes,
+    or past function calls/control flow. A formal proof is still mandatory
+    for a result promoted to EQUIVALENT.
+    """
+    lines = source.splitlines(keepends=True)
+    for i in range(len(lines) - 1):
+        a, b = (FIELD_LINE_RE.fullmatch(lines[j].rstrip("\r\n"))
+                for j in (i, i + 1))
+        if not a or not b:
+            continue
+        a_slot, b_slot = int(a["slot"], 0), int(b["slot"], 0)
+        if a_slot == b_slot:
+            continue
+        # Restrict to pointer arithmetic, casts and field references. Reject
+        # calls other than C2Scope's known hs_bind identity helper, as well as
+        # increment/decrement, assignment expressions and side-effecting ops.
+        rhs = (a["rhs"], b["rhs"])
+        allowed = re.compile(r"^[\w\s\[\]\(\)+*\-&0-9xXuU]+$")
+        if any(not allowed.fullmatch(expr) or "++" in expr or "--" in expr or
+               re.search(r"\b(?!hs_bind\b)[A-Za-z_]\w*\s*\(", expr)
+               for expr in rhs):
+            # C-style casts may match that final expression only if the token
+            # preceding '(' is a variable name; discard these probes rather
+            # than assert that an unrecognised call is pure.
+            continue
+        reads_a = {int(m["slot"], 0) for m in FIELD_REF_RE.finditer(a["rhs"])}
+        reads_b = {int(m["slot"], 0) for m in FIELD_REF_RE.finditer(b["rhs"])}
+        if a_slot in reads_b or b_slot in reads_a:
+            continue
+        reordered = list(lines)
+        reordered[i], reordered[i+1] = reordered[i+1], reordered[i]
+        changed = "".join(reordered)
+        if changed != source:
+            yield f"schedule:swap[{a_slot},{b_slot}]@{i+1}", changed
+
+
 def parse_sweep(log: str) -> tuple[tuple[int, int] | None, list[tuple[str, int, int, Path]], int]:
     """Parse *measured* C2Scope candidates and their paths, never invent scores."""
     base = BASELINE_RE.search(log)
@@ -380,6 +431,21 @@ class Engine:
                 found.append(child)
         return found
 
+    def enqueue_schedule_mutations(self, row) -> list[str]:
+        """Cheap local statement-order probes only for near-match parents."""
+        if (row["generation"] >= self.a.max_generations or
+                row["status"] in ("VC9_FAILED", "UNSAFE", "ERROR") or
+                row["rdiff"] is None or row["rdiff"] > 3):
+            return []
+        found = []
+        for label, src in field_store_order_mutations(
+                Path(row["path"]).read_text(encoding="utf-8")):
+            child = self.store.add(src, row["id"], label, row["generation"] + 1,
+                                   row["rdiff"], row["bdiff"])
+            if child != row["id"] and child not in found:
+                found.append(child)
+        return found
+
     def backfill_field_mutations(self) -> int:
         """Recover cross-family candidates missed by earlier search versions."""
         before = len(self.store.all())
@@ -388,6 +454,7 @@ class Engine:
             # from candidates that have been successfully compiled before.
             if row["snapshot"] is not None:
                 self.enqueue_field_mutations(row)
+                self.enqueue_schedule_mutations(row)
         return len(self.store.all()) - before
 
     def evaluate_pending(self, quota: dict, max_count: int | None = None) -> bool:
@@ -436,7 +503,7 @@ class Engine:
         # Each C2Scope invocation compiles the baseline, up to --limit
         # singles and --verify combos. Reserve headroom for snapshots.
         budget = self.remaining()
-        if budget < 3:
+        if budget < getattr(self.a, "min_sweep_budget", 24):
             return []
         # Reserve compiles for newly generated source combinations. A full
         # 500-variant sweep per parent starves exactly the variants it finds.
@@ -450,6 +517,8 @@ class Engine:
             # but may not consume a full sweep for identical machine code.
             limit = min(limit, 48)
         verify = min(self.a.verify_combos, max(0, usable - 1 - limit))
+        if limit < 16:
+            return []
         source = Path(row["path"])
         cmd = ["uv", "run", "tools/rwsweep.py", str(source),
                "--func", FUNC, "--asm-vs", str(self.store.log_dir / "original.s"),
@@ -504,6 +573,7 @@ class Engine:
                 # Generate field-dependency on the C2Scope rewrite itself.
                 # This allows wrap -> field -> alias without manual selection.
                 crossed += len(self.enqueue_field_mutations(self.store.row(child)))
+                self.enqueue_schedule_mutations(self.store.row(child))
             if len(outputs) >= self.a.collect_top:
                 break
         self.store.db.execute("INSERT OR REPLACE INTO sweeps VALUES (?,?,?,?,?)",
@@ -540,12 +610,18 @@ class Engine:
                        r["status"] == "NEW"]
             if not frontier and not pending:
                 break
+            if not pending and self.remaining() < getattr(self.a, "min_sweep_budget", 24):
+                print(f"Only {self.remaining()} estimated compiles remain; "
+                      f"below the minimum useful sweep budget of {getattr(self.a, 'min_sweep_budget', 24)}. "
+                      "Stopping without rerunning empty generations.", flush=True)
+                break
             print(f"\n=== Generation {iteration+1}: {len(frontier)} scheduled sweeps, "
                   f"{len(pending)} uncompiled proposals ===", flush=True)
             for row in frontier:
                 if self.remaining() < 3:
                     break
                 self.enqueue_field_mutations(row)
+                self.enqueue_schedule_mutations(row)
                 if self.evaluate_pending(quota):
                     self.summary()
                     return 0
@@ -559,6 +635,8 @@ class Engine:
                 self.summary()
                 return 0
             self.summary()
+            if not pending and self.remaining() < getattr(self.a, "min_sweep_budget", 24):
+                break
         best = self.store.best_proven()
         if best:
             print(f"Best proven: {best['path']} ({best['proof']}, rdiff={best['rdiff']}, bdiff={best['bdiff']})",
@@ -592,6 +670,8 @@ def build_parser():
     p.add_argument("--max-generations", type=int, default=6)
     p.add_argument("--sweeps-per-generation", type=int, default=3,
                    help="Limit expensive C2Scope sweeps before considering newly compiled children")
+    p.add_argument("--min-sweep-budget", type=int, default=24,
+                   help="Do not spend the last compiles on tiny, ineffective C2Scope sweeps")
     p.add_argument("--per-parent-limit", type=int, default=160)
     p.add_argument("--verify-combos", type=int, default=8)
     p.add_argument("--collect-top", type=int, default=24)
@@ -612,7 +692,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     for field in ("beam_width", "workers", "max_compiles", "max_generations",
-                  "sweeps_per_generation", "per_parent_limit", "collect_top", "per_score", "machine_alternatives",
+                  "sweeps_per_generation", "per_parent_limit", "min_sweep_budget", "collect_top", "per_score", "machine_alternatives",
                   "evaluate_top", "inputs", "proof_timeout", "sweep_timeout"):
         if getattr(args, field) <= 0:
             parser.error(f"--{field.replace('_', '-')} must be positive")
