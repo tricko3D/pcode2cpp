@@ -62,9 +62,13 @@ variants: /tmp/c2scope/work/variant-abc@15.00/v<id>/v<id>.cpp
             seed = s.add('seed', None, 'seed', 0, 2, 6)
             s.update(seed, expanded=1)
             for i in range(10):
-                s.add('candidate%d' % i, seed, 'rwsweep:v%04d' % i, 1, 1, i + 3)
+                ident = s.add('candidate%d' % i, seed, 'rwsweep:v%04d' % i, 1, 1, i + 3)
+                s.update(ident, snapshot='{}', status='COMPILED')
             special = s.add('special', seed, 'field:param_1[2]<-4', 1, 10, 30)
+            s.update(special, snapshot='{}', status='COMPILED')
+            pending = s.add('uncompiled', seed, 'rwsweep:v9999', 1, 0, 0)
             self.assertIn(special, [x['id'] for x in s.eligible(4, 2)])
+            self.assertNotIn(pending, [x['id'] for x in s.eligible(4, 2)])
 
     def test_duplicate_machine_reuses_formal_verdict_and_skips_proof(self):
         with tempfile.TemporaryDirectory() as folder:
