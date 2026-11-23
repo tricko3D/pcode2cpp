@@ -520,54 +520,44 @@ class Engine:
             if self.evaluate(self.seed_id, do_unicorn=True, do_proof=True):
                 self.summary()
                 return 0
+        recovered = self.backfill_field_mutations()
+        if recovered:
+            print(f"Recovered {recovered} field-dependency combinations from saved sources", flush=True)
         for iteration in range(self.a.max_generations):
-            if self.remaining() < 2:
+            if self.remaining() < 1:
                 break
+            quota = {"evaluate": self.a.evaluate_top,
+                     "unicorn": self.a.unicorn_top,
+                     "formal": self.a.formal_top}
+            # Inspect saved candidates before new sweeps. On resume this
+            # processes novel field crosses without repeating completed work.
+            if self.evaluate_pending(quota, max_count=max(4, self.a.evaluate_top // 2)):
+                self.summary()
+                return 0
             frontier = self.store.eligible(self.a.beam_width, self.a.machine_alternatives)
-            pending = [r for r in self.store.all() if r["snapshot"] is None and r["status"] == "NEW"]
+            frontier = frontier[:self.a.sweeps_per_generation]
+            pending = [r for r in self.store.all() if r["snapshot"] is None and
+                       r["status"] == "NEW"]
             if not frontier and not pending:
                 break
-            print(f"\n=== Generation {iteration+1}: {len(frontier)} parents, "
+            print(f"\n=== Generation {iteration+1}: {len(frontier)} scheduled sweeps, "
                   f"{len(pending)} uncompiled proposals ===", flush=True)
-            created = []
             for row in frontier:
-                if self.remaining() < 2:
+                if self.remaining() < 3:
                     break
-                # New family: derivation from an earlier, stored pointer value.
-                for label, src in field_dependency_mutations(Path(row["path"]).read_text(encoding="utf-8")):
-                    child = self.store.add(src, row["id"], label, row["generation"]+1,
-                                           row["rdiff"], row["bdiff"])
-                    created.append(child)
-                created.extend(self.sweep(row))
-            # Snapshot the most promising discovered sources, reserving slots
-            # for the dataflow family that has only inherited ranking so far.
-            # Also drain older NEW proposals. A compilation-limited run can
-            # create more than it evaluates; those must not be lost on resume.
-            fresh = [r for r in self.store.all() if r["snapshot"] is None and
-                     r["status"] == "NEW"]
-            fresh.sort(key=lambda r: (r["rdiff"] if r["rdiff"] is not None else 10000,
-                                      r["bdiff"] if r["bdiff"] is not None else 10000))
-            special = [r for r in fresh if r["origin"].startswith("field:")]
-            ordered = list(dict.fromkeys([r["id"] for r in special[:2]] +
-                                         [r["id"] for r in fresh]))
-            unicorn_used = proof_used = 0
-            for ident in ordered[:self.a.evaluate_top]:
-                if self.remaining() < 1:
-                    break
-                before = self.store.row(ident)
-                matched = self.evaluate(ident,
-                                        do_unicorn=(unicorn_used < self.a.unicorn_top),
-                                        do_proof=(proof_used < self.a.formal_top))
-                after = self.store.row(ident)
-                if after["status"] != "DUPLICATE_MACHINE":
-                    if before["empirical"] is None and after["empirical"] is not None:
-                        unicorn_used += 1
-                    if before["proof"] is None and after["proof"] is not None:
-                        proof_used += 1
-                if matched:
-                    print(f"MATCH: {self.store.row(ident)['path']}", flush=True)
+                self.enqueue_field_mutations(row)
+                if self.evaluate_pending(quota):
                     self.summary()
                     return 0
+                self.sweep(row)
+                # Compile new source combinations between sweeps, instead of
+                # letting weaker parents exhaust the entire budget.
+                if self.evaluate_pending(quota):
+                    self.summary()
+                    return 0
+            if self.evaluate_pending(quota):
+                self.summary()
+                return 0
             self.summary()
         best = self.store.best_proven()
         if best:
