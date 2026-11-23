@@ -279,5 +279,58 @@ return param_1;
             self.assertIn(normal, seen)
 
 
+    def test_schedule_probe_moves_independent_stores_not_field_dependencies(self):
+        src = ("param_1[4] = (int)(param_1 + 5);\n"
+               "param_1[2] = (int)((unsigned int)param_1[4] + 0x40u);\n"
+               "param_1[1] = (int)(param_1 + 5);\n")
+        mutations = list(A.field_store_order_mutations(src))
+        self.assertEqual(len(mutations), 1)
+        label, transformed = mutations[0]
+        self.assertIn("schedule:swap[2,1]", label)
+        self.assertLess(transformed.index("param_1[1]"), transformed.index("param_1[2]"))
+        self.assertLess(transformed.index("param_1[4]"), transformed.index("param_1[2]"))
+
+    def test_schedule_backfill_revisits_proven_near_match_without_sweep(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = A.Store(Path(folder))
+            src = ("param_1[4] = (int)(param_1 + 5);\n"
+                   "param_1[2] = (int)((unsigned int)param_1[4] + 0x40u);\n"
+                   "param_1[1] = (int)(param_1 + 5);\n")
+            seed = store.add(src, None, 'seed', 0, 1, 4)
+            store.update(seed, snapshot='{}', machine='base', proof='EQUIVALENT',
+                         status='EQUIVALENT', expanded=1)
+            engine = A.Engine.__new__(A.Engine)
+            engine.store = store
+            engine.a = types.SimpleNamespace(max_generations=6)
+            self.assertGreaterEqual(engine.backfill_field_mutations(), 1)
+            new = [row for row in store.all() if row['id'] != seed]
+            scheduling = [row for row in new if row['origin'].startswith('schedule:')]
+            self.assertEqual(len(scheduling), 1)
+            self.assertEqual(scheduling[0]['status'], 'NEW')
+            self.assertEqual(store.best_proven()['id'], seed)
+
+    def test_tiny_remaining_budget_skips_sweeps_without_repeating_generations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = A.Store(Path(folder))
+            ident = store.add('int f() { return 1; }', None, 'seed', 0, 1, 4)
+            store.update(ident, snapshot='{}', machine='base', status='EQUIVALENT',
+                         proof='EQUIVALENT')
+            store.debit(2991)
+            engine = A.Engine.__new__(A.Engine)
+            engine.store = store
+            engine.seed_id = ident
+            engine.a = types.SimpleNamespace(max_generations=6, beam_width=16,
+                machine_alternatives=1, max_compiles=3000, evaluate_top=24,
+                unicorn_top=8, formal_top=4, sweeps_per_generation=3,
+                min_sweep_budget=24)
+            engine.remaining = lambda: 9
+            engine.summary = lambda: None
+            calls = []
+            engine.sweep = lambda row: calls.append(row)
+            self.assertEqual(engine.run(), 0)
+            self.assertEqual(calls, [])
+            self.assertEqual(store.count(), 2991)
+
+
 if __name__ == '__main__':
     unittest.main()
