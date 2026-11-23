@@ -142,6 +142,18 @@ def main():
     code_path.write_text(PREFIX + body.strip("\n") + "\n}\n", encoding="utf-8")
     print(f"Candidate: {code_path}", flush=True)
 
+    # A single local syntax/type check. Diagnostics are written to disk;
+    # there is deliberately no repair prompt or additional model request.
+    from check_candidate import check_candidate
+
+    result = check_candidate(code_path)
+    print(
+        f"Compiler check: {result.status}; diagnostics: {result.diagnostics_path}",
+        flush=True,
+    )
+    if not result.passed:
+        print(result.diagnostics, flush=True)
+
 
 if __name__ == "__main__":
     main()
