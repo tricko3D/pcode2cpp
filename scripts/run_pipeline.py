@@ -11,6 +11,12 @@ from pathlib import Path
 import re
 import sys
 
+# Running `python scripts/run_pipeline.py` puts scripts/ on sys.path, not
+# necessarily the repository root. Ghidra/context imports need pcode2cpp/.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 try:
     from . import ai_fallback as AI
     from . import auto_match as A
