@@ -314,6 +314,12 @@ class Engine:
                 self.store.debit(1)
                 return False
             self.store.debit(1)
+            if not state.get("callee_symbol_valid"):
+                self.store.update(ident, status="UNSAFE", fingerprint=state["fingerprint"],
+                                  snapshot=json.dumps(state),
+                                  note="Unexpected external callee symbol; cannot validate linkage")
+                print("  Rejected: external callee symbol not validated", flush=True)
+                return False
             machine = state["machine_sha256"]
             prior = next((r for r in self.store.all() if r["id"] != ident and
                           r["machine"] == machine and r["snapshot"]), None)
@@ -360,6 +366,7 @@ class Engine:
         ident = row["id"]
         old = self.store.db.execute("SELECT * FROM sweeps WHERE parent=?", (ident,)).fetchone()
         if old and old["status"] == "DONE":
+            self.store.update(ident, expanded=1)
             return []
         # Each C2Scope invocation compiles the baseline, up to --limit
         # singles and --verify combos. Reserve headroom for snapshots.
