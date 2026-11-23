@@ -218,7 +218,11 @@ def render_prompt(context, system_prompt, direct_callees=None, missing_callees=N
         "## System instruction",
         system_prompt.strip(),
         "## Function identity",
-        "\n".join(header),
+        "Reconstruct ONLY the primary function described below. "
+        "Direct callee exports are supporting evidence for call behavior and ABI, "
+        "not additional functions to implement. "
+        "Treat stored prototypes as potentially incomplete when they conflict "
+        "with decompiled code or assembly.\n\n" + "\n".join(header),
         "## Decompiled C (Ghidra's best approximation)",
         code_block("c", context["pseudocode"]),
         "## Original assembly (instruction addresses retained)",
