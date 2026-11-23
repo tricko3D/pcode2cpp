@@ -50,6 +50,24 @@ cp config.example.json config.json
 
 Edit `config.json` for the analyzed Ghidra project, program file, local llama.cpp URL and optional external Spore checkout. `config.json` is ignored by Git.
 
+**Existing GUI project integration:** `ghidra.project_path` is the **parent directory containing the `.gpr` file**, not the `.rep` directory; `ghidra.project_name` is the project filename without `.gpr`; `ghidra.project_program` is the name of the already imported binary at the Ghidra project root. `ghidra.program` is the accessible path to that binary on disk. The exporter opens the existing GUI-style project with PyGhidra and **does not reanalyze or create a second nested project**. Close that project in the Ghidra GUI before exporting to avoid project-lock conflicts.
+
+For a Ghidra project created in **Windows**, run pcode2cpp from Windows Python so it accesses the native project directly. For example, if the project is `C:\\Users\\patrick\\spore-retail.gpr` and the binary was imported as `SporeApp.retail.analysis.bin`:
+
+```json
+{
+  "ghidra": {
+    "project_path": "C:/Users/patrick",
+    "project_name": "spore-retail",
+    "program": "C:/SporeSymbols/SporeApp.retail.analysis.bin",
+    "project_program": "SporeApp.retail.analysis.bin",
+    "install_dir": "C:/ghidra_12.1.4_PUBLIC"
+  }
+}
+```
+
+Keep the existing `llm` and `spore` sections of `config.json` when updating `ghidra`. Install `pyghidra` and `jupyterlab` in the same Windows Python environment that runs the notebook. The existing `context = export_function(...)` notebook cell then loads the analyzed project and writes `cases/<address>/context.json` automatically. No manual JSON copying or GUI export scripts are needed. The first end-to-end Ghidra export still requires verification on your machine.
+
 **Run Inkling separately**, using the existing llama.cpp server with enough context for the entire function record and the requested output length. An example server endpoint is `http://127.0.0.1:8080/v1/chat/completions`. The server is *not* started by pcode2cpp. No OpenRouter/API key is used.
 
 ```bash
