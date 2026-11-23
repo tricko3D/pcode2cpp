@@ -446,7 +446,7 @@ def run(args) -> int:
         print("Already byte-exact; no inference needed", flush=True)
         return 0
     seen = {hashlib.sha256(candidate.read_bytes()).hexdigest()}
-    seen_machine = {state["machine_sha256"]}
+    seen_machine = {state["machine_sha256"]} if state.get("machine_sha256") else set()
     model_cfg = config["llm"]
     history = []
     failed_variants: list[str] = []
@@ -518,8 +518,8 @@ def run(args) -> int:
         except Exception as exc:
             print(f"Round {round_no}: VC9 check failed: {exc}")
             return 1
-        current_machine = updated["machine_sha256"]
-        if current_machine in seen_machine:
+        current_machine = updated.get("machine_sha256")
+        if current_machine is not None and current_machine in seen_machine:
             note = "VC9 generated the same machine code as an earlier candidate"
             print(f"Round {round_no}: {note}. Skipping Unicorn and formal proof.", flush=True)
             changes = "".join(difflib.unified_diff(
@@ -533,7 +533,8 @@ def run(args) -> int:
             (case / "summary.json").write_text(json.dumps(history, indent=2),
                                                encoding="utf-8")
             continue
-        seen_machine.add(current_machine)
+        if current_machine is not None:
+            seen_machine.add(current_machine)
         previous_feedback = None
         delta = round(updated["shape_similarity_heuristic"] - state["shape_similarity_heuristic"], 5)
         print(f"Round {round_no} VC9: {updated['fingerprint']}, "
