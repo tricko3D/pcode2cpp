@@ -1,0 +1,21 @@
+{
+  "ghidra": {
+    "pyghidra": "pyghidra",
+    "project_path": "/home/YOU/spore-decomp/work/ghidra",
+    "project_name": "spore",
+    "program": "/home/YOU/spore-decomp/work/SporeApp.analysis.bin",
+    "install_dir": null
+  },
+  "llm": {
+    "url": "http://127.0.0.1:8080/v1/chat/completions",
+    "model": "local",
+    "temperature": 0,
+    "max_tokens": 4096,
+    "timeout_seconds": 1800
+  },
+  "spore": {
+    "repo_path": "/home/YOU/spore-decomp",
+    "python": ".venv/bin/python",
+    "timeout_seconds": 600
+  }
+}

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcode2cpp"
+version = "0.1.0"
+description = "Local non-agentic Ghidra High P-code to C++ reconstruction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "pcode2cpp contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+notebook = ["jupyterlab>=4.0", "ipykernel>=6.0"]
+
+[tool.setuptools.packages.find]
+include = ["pcode2cpp*", "integrations*"]
