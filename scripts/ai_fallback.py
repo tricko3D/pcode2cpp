@@ -144,6 +144,10 @@ def produce_round(engine, profile: dict, round_no: int, patches: int) -> list[st
     for i, proposal in enumerate(edits[:patches]):
         try:
             variant = apply_edit(candidate, proposal)
+            ident = A.digest(variant)
+            if store.row(ident) is not None:
+                rejected.append({'index': i, 'reason': 'Duplicate known source'})
+                continue
             ident = store.add(variant, parent['id'], f'ai:{profile["name"]}:{round_no}:{i}',
                               parent['generation'] + 1, parent['rdiff'], parent['bdiff'])
             if ident != parent['id'] and ident not in ids:
