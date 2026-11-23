@@ -1,5 +1,6 @@
 """Offline tests for the resumable VC9 beam search; no Spore/C2Scope required."""
 import json
+import subprocess
 from pathlib import Path
 import tempfile
 import types
@@ -163,6 +164,119 @@ return param_1;
             unproven = s.add('another', proven, 'rwsweep:v1', 1, 0, 1)
             s.update(unproven, proof='REFUTED', status='REFUTED')
             self.assertEqual(s.best_proven()['id'], proven)
+
+
+
+    def test_field_dependency_survives_c2scope_wrapped_pointer(self):
+        text = (
+            "hs_bind(param_1)[4] = (int)(hs_bind(param_1) + 5);\n"
+            "param_1[2] = (int)(param_1 + 0x15);\n"
+        )
+        mutations = list(A.field_dependency_mutations(text))
+        self.assertTrue(any("(unsigned int)param_1[4] + 0x40u" in src
+                            for _, src in mutations))
+
+    def test_duplicate_machine_is_not_a_full_sweep_parent_by_default(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = A.Store(Path(folder))
+            parent = store.add('original', None, 'seed', 0, 3, 12)
+            duplicate = store.add('wrapped', parent, 'rwsweep:v0001', 1, 2, 6)
+            store.update(parent, machine='M', snapshot='{}', status='EQUIVALENT')
+            store.update(duplicate, machine='M', snapshot='{}', status='DUPLICATE_MACHINE')
+            self.assertEqual([r['id'] for r in store.eligible(10, 1)], [parent])
+            self.assertEqual(len(store.eligible(10, 2)), 2)
+
+    def test_sweep_immediately_crosses_new_wrappers_with_field_dependencies(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = A.Store(root / 'state')
+            src = ('param_1[4] = (int)(param_1 + 5);\n'
+                   'param_1[2] = (int)(param_1 + 0x15);\n')
+            key = store.add(src, None, 'seed', 0, 12, 33)
+            store.update(key, snapshot='{}', status='COMPILED')
+            rwsweep = root / 'c2scope/rwsweep-result'
+            (rwsweep / 'v0024').mkdir(parents=True)
+            wrapped = src.replace('param_1[4]', 'hs_bind(param_1)[4]', 1)
+            (rwsweep / 'v0024/v0024.cpp').write_text(wrapped)
+            log = ("3 variables, 9 statements, 1 variants\n"
+                   "baseline: 26 instructions, rdiff 12, bdiff 33, regdiff 26\n"
+                   "1 measured, 0 failed to compile, 0 changed nothing\n"
+                   "  v0024 wrap 6 6 8* 29 22 hs_bind(param_1)\n"
+                   f"variants: {rwsweep}/v<id>/v<id>.cpp\n")
+            e = A.Engine.__new__(A.Engine)
+            e.store = store
+            e.c2root = root / 'c2scope'
+            e.a = types.SimpleNamespace(per_parent_limit=160, verify_combos=0,
+                workers=2, families='wrap,alias', sweep_timeout=30,
+                per_score=2, collect_top=8, max_generations=6)
+            e.remaining = lambda: 200
+            with patch.object(A.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, log, '')):
+                outputs = e.sweep(store.row(key))
+            self.assertEqual(len(outputs), 1)
+            crosses = [r for r in store.all() if r['origin'].startswith('field:')]
+            self.assertTrue(crosses)
+            self.assertEqual(crosses[0]['parent'], outputs[0])
+            self.assertIn('param_1[4] + 0x40u', Path(crosses[0]['path']).read_text())
+
+    def test_resume_backfills_fields_before_another_sweep(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = A.Store(Path(folder))
+            src = ('param_1[4] = (int)(param_1 + 5);\n'
+                   'param_1[2] = (int)(param_1 + 0x15);\n')
+            wrapped = src.replace('param_1[4]', 'hs_bind(param_1)[4]', 1)
+            seed = store.add(src, None, 'seed', 0, 12, 33)
+            variant = store.add(wrapped, seed, 'rwsweep:v0024', 1, 8, 29)
+            store.update(seed, snapshot='{}', machine='M0',
+                         status='EQUIVALENT', proof='EQUIVALENT', expanded=1)
+            store.update(variant, snapshot='{}', machine='M1',
+                         status='COMPILED', expanded=1)
+            engine = A.Engine.__new__(A.Engine)
+            engine.store = store
+            engine.seed_id = seed
+            engine.a = types.SimpleNamespace(max_generations=2,
+                evaluate_top=12, unicorn_top=3, formal_top=3, beam_width=4,
+                machine_alternatives=1, sweeps_per_generation=2,
+                max_compiles=2000)
+            engine.remaining = lambda: 50
+            engine.summary = lambda: None
+            done = []
+            def evaluate(ident, **kwargs):
+                done.append(ident)
+                store.update(ident, snapshot='{}', status='COMPILED')
+                return False
+            engine.evaluate = evaluate
+            def sweep(row):
+                self.assertNotIn(row['id'], (seed, variant),
+                                 'Previously expanded sweep was repeated')
+                self.assertTrue(done, 'Deferred variants must be evaluated before sweeps')
+                store.update(row['id'], expanded=1)
+                return []
+            engine.sweep = sweep
+            self.assertEqual(engine.run(), 0)
+            self.assertTrue(any(store.row(i)['origin'].startswith('field:') for i in done))
+            self.assertTrue(any(store.row(i)['parent'] == variant for i in done))
+
+    def test_pending_field_variants_are_evaluated_before_lower_rdiff_proposals(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = A.Store(Path(folder))
+            seed = store.add('seed', None, 'seed', 0, 12, 33)
+            normal = store.add('normal', seed, 'rwsweep:v0001', 1, 1, 4)
+            field = store.add('special', seed, 'field:param_1[2]<-4', 1, 8, 29)
+            engine = A.Engine.__new__(A.Engine)
+            engine.store = store
+            engine.a = types.SimpleNamespace(evaluate_top=4)
+            engine.remaining = lambda: 100
+            seen = []
+            def evaluate(ident, **kwargs):
+                seen.append(ident)
+                store.update(ident, snapshot='{}', status='COMPILED')
+                return False
+            engine.evaluate = evaluate
+            quota = {'evaluate': 4, 'unicorn': 0, 'formal': 0}
+            engine.evaluate_pending(quota)
+            self.assertEqual(seen[0], field)
+            self.assertIn(normal, seen)
 
 
 if __name__ == '__main__':
