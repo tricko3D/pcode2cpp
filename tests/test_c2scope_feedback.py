@@ -50,6 +50,10 @@ class C2ScopeFeedbackTests(unittest.TestCase):
 
             def fake_run(args, **kwargs):
                 calls.append((args, kwargs))
+                if len(calls) == 2:
+                    (case / "base.icount.json").write_text(json.dumps({
+                        "ours": 26, "orig": 24, "runs": []
+                    }))
                 return output[len(calls) - 1]
 
             with patch.object(C, "ROOT", project), patch.object(C.subprocess, "run", fake_run):
