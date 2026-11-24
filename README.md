@@ -185,9 +185,9 @@ python -u scripts/diagnose_match.py --model inkling-mini --dry-run
 python -u scripts/diagnose_match.py --model inkling-mini
 ```
 
-This uses the 12 relevant techniques by default, with an optional
-`--full-catalog` switch for larger-context models. The complete list of
-**79 compiler and matching diagnostics** is in
+This uses 12 general diagnostic questions by default, with an optional
+`--full-catalog` switch for larger-context models. The reusable list of
+**158 compiler- and architecture-agnostic investigation techniques** is in
 [docs/byte-match-techniques.md](docs/byte-match-techniques.md); the standalone
 analysis prompt is [prompts/byte_match_diagnosis.md](prompts/byte_match_diagnosis.md).
 The existing candidates and SQLite state are never mutated by diagnosis.
