@@ -212,8 +212,10 @@ def verify(checkout, address, path):
     path.write_text(result, encoding="utf-8")
     pattern = r"(?m)^MATCH\s+0x[0-9a-f]+\b"
     symbol = re.search(r"(?m)^(?:NO )?MATCH\s+0x[0-9a-f]+\s+(\S+)", result, re.I)
+    flags = re.search(r"(?m)^(?:NO )?MATCH\s+0x[0-9a-f]+.*?\[([^\]]+)\]", result, re.I)
     return {"match": bool(re.search(pattern, result, re.I)),
             "symbol": symbol.group(1) if symbol else None,
+            "compiler_flags": flags.group(1).split() if flags else None,
             "exit": p.returncode, "log": str(path),
             "feedback": result[-9000:]}
 
@@ -232,7 +234,7 @@ def retail_assembly(checkout, address, output):
         raise RuntimeError("Cannot read original assembly: " + p.stderr[-1200:])
 
 
-def mechanical(checkout, address, source, symbol, folder, workers, limit):
+def mechanical(checkout, address, source, symbol, folder, workers, limit, flags):
     folder.mkdir(parents=True, exist_ok=True)
     asm = folder / "original.s"
     retail_assembly(checkout, address, asm)
@@ -241,8 +243,7 @@ def mechanical(checkout, address, source, symbol, folder, workers, limit):
         "--func", symbol, "--asm-vs", str(asm),
         "--families", A.DEFAULT_FAMILIES, "--jobs", str(workers),
         "--limit", str(limit), "--max-combo", "2", "--verify", "8",
-        "--c2", "15.00", "--", "/O2", "/MD", "/Gy", "/EHsc", "/TP",
-        "/I" + str(checkout / "src/game/include")
+        "--c2", "15.00", "--", *flags
     ]
     env = os.environ.copy()
     env["C2TRACE_REMOTE"] = "0"
@@ -309,12 +310,12 @@ def pipeline(args):
                 matched = True
                 break
             feedback = result["feedback"]
-            if result["symbol"] and args.sweep_limit > 0:
+            if result["symbol"] and result["compiler_flags"] and args.sweep_limit > 0:
                 try:
                     folder = logs / f"c2scope_{n:02d}"
                     ranked, count = mechanical(
                         checkout, address, source, result["symbol"], folder,
-                        args.workers, args.sweep_limit)
+                        args.workers, args.sweep_limit, result["compiler_flags"])
                     trials.append({"round": n, "kind": "c2scope", "measured": count,
                                    "ranked_scores": [[name, rd, bd] for name, rd, bd, _ in ranked]})
                     for i, (name, rd, bd, path) in enumerate(ranked):
@@ -344,7 +345,7 @@ def pipeline(args):
     save(destination, {
         "arm": "pipeline", "model": MODEL, "match": matched, "error": failure,
         "total_tokens": totals, "model_calls": tokens, "attempts": trials,
-        "source_sha256": sha(source.read_bytes()), "seconds": time.time() - t0,
+        "source_sha256": sha(source.read_bytes()) if source.is_file() else None, "seconds": time.time() - t0,
         "allowance_before": before, "allowance_after": after,
         "allowance_change": allowance(before, after),
     })
@@ -393,7 +394,7 @@ def isolated(args):
         "verification": verification, "error": failure,
         "total_tokens": (usage.get("usage") or {}),
         "model_calls": [usage] if usage else [],
-        "source_sha256": sha(source.read_bytes()),
+        "source_sha256": sha(source.read_bytes()) if source.is_file() else None,
         "seconds": time.time() - t0,
         "allowance_before": before, "allowance_after": after,
         "allowance_change": allowance(before, after),
@@ -452,7 +453,7 @@ def agent(args):
         "verification": final, "exit": rc, "stderr_tail": stderr[-1000:],
         "total_tokens": turns[-1] if turns else {},
         "all_turn_usage": turns, "tool_invocations": tools,
-        "source_sha256": sha(source.read_bytes()), "seconds": time.time() - t0,
+        "source_sha256": sha(source.read_bytes()) if source.is_file() else None, "seconds": time.time() - t0,
         "allowance_before": before, "allowance_after": after,
         "allowance_change": allowance(before, after),
     })
