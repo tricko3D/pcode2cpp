@@ -24,6 +24,21 @@ def load_profile(path: Path, name: str, *, allow_remote: bool = False) -> dict:
     if name not in profiles:
         raise ValueError(f"Model profile {name!r} not found in {path}")
     profile = dict(profiles[name])
+    provider = profile.get("provider", "http")
+    if provider == "codex_cli":
+        # ChatGPT account authentication via local Codex CLI; not an API key.
+        if any(profile.get(key) for key in ("url", "api_key_env", "extra_body")):
+            raise ValueError("Codex CLI profile cannot specify HTTP endpoint, API key or extra_body")
+        model = profile.get("model", "default")
+        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", model):
+            raise ValueError("Codex CLI model must be 'default' or a model identifier")
+        profile["model"] = model
+        # Stable identity for the existing fallback cache, which uses profile['url'].
+        profile["url"] = "codex-cli://chatgpt"
+        profile["name"] = name
+        return profile
+    if provider != "http":
+        raise ValueError(f"Unknown model provider: {provider}")
     url = profile.get("url", "")
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.path:
@@ -56,6 +71,12 @@ def chat_json(profile: dict, messages: list[dict], *, temperature: float | None 
     """
     if not messages:
         raise ValueError("At least one message is required")
+    if profile.get("provider") == "codex_cli":
+        try:
+            from .codex_chat import chat_codex
+        except ImportError:
+            from codex_chat import chat_codex
+        return chat_codex(profile, messages)
     key_env = profile.get("api_key_env")
     api_key = os.environ.get(key_env) if key_env else None
     if key_env and not api_key:
