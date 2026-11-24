@@ -50,7 +50,7 @@ class BenchmarkTests(unittest.TestCase):
                     got = B.verify(checkout, "0x0088abcd", checkout / f"log{i}.txt")
                 self.assertEqual(got["match"], expected)
 
-    def test_three_independent_arms_are_recorded(self):
+    def test_shared_pipeline_and_two_refinements_are_recorded(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(B, "BASE", Path(temp)):
                 address = "0x0088abcd"
@@ -62,8 +62,40 @@ class BenchmarkTests(unittest.TestCase):
                     "evidence_sha256": "bb",
                 })
                 B.report(SimpleNamespace(address=address))
-                results = B.read(base / "comparison.json")["arms"]
-                self.assertEqual(set(results), {"pipeline", "isolated", "agent"})
+                results = B.read(base / "comparison.json")
+                self.assertIn("common_pipeline", results)
+                self.assertEqual(set(results["refinements"]), {"isolated", "agent"})
+                self.assertFalse(results["comparison_valid_identical_starting_candidates"])
+
+
+    def test_both_refinements_receive_exact_same_pipeline_candidate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            address = "0x0088abcd"
+            relative = "match/slices/s0088abcd/s0088abcd.cpp"
+            payload = b"// @ 0x0088abcd\nint f() { return 42; }\n"
+            handoff = base / "pipeline/handoff.cpp"
+            handoff.parent.mkdir(parents=True)
+            handoff.write_bytes(payload)
+            digest = B.sha(payload)
+            B.save(base / "pipeline/result.json", {
+                "handoff_sha256": digest,
+                "handoff_verification": {"feedback": "NO MATCH: bytes differ"},
+            })
+            meta = {"target": {"address": address, "retail_bytes": 1200},
+                    "target_source": relative}
+            hashes = []
+            for arm in ("isolated", "agent"):
+                source = base / arm / "spore" / relative
+                source.parent.mkdir(parents=True)
+                source.write_text("// @ 0x0088abcd\n// No implementation yet.\n")
+                result, prompt = B.handoff_to_refinement(base, meta, arm)
+                hashes.append(result)
+                self.assertEqual(source.read_bytes(), payload)
+                self.assertIn("NO MATCH", prompt)
+            self.assertEqual(hashes, [digest, digest])
+            with self.assertRaisesRegex(RuntimeError, "not pristine"):
+                B.handoff_to_refinement(base, meta, "isolated")
 
 
 if __name__ == "__main__":
