@@ -171,6 +171,27 @@ translator, modify Spore's tracked sources, or call an LLM during the search.
 See [Automated VC9 matching](docs/auto-match.md) for setup, resumable
 commands, search budgets, verification rules and limitations.
 
+## Diagnose a near-match without generating code
+
+The optional, read-only **diagnosis-only** workflow loads the strongest formally
+verified candidate directly from the auto-match SQLite history, including the
+actual VC9 assembly, retail assembly, and compact prior compiler outcomes.
+It asks the selected model for a short explanation of the compiler difference,
+not for source edits or additional compilation.
+
+```bash
+python -m unittest tests.test_diagnose_match -v
+python -u scripts/diagnose_match.py --model inkling-mini --dry-run
+python -u scripts/diagnose_match.py --model inkling-mini
+```
+
+This uses the 12 relevant techniques by default, with an optional
+`--full-catalog` switch for larger-context models. The complete list of
+**79 compiler and matching diagnostics** is in
+[docs/byte-match-techniques.md](docs/byte-match-techniques.md); the standalone
+analysis prompt is [prompts/byte_match_diagnosis.md](prompts/byte_match_diagnosis.md).
+The existing candidates and SQLite state are never mutated by diagnosis.
+
 ## Optional verification integration
 
 The core only handles Ghidra context → local C++. A small standard `VerificationBackend` interface in `pcode2cpp/verification.py` accepts a function address and a prepared source-file path, returning one of:
