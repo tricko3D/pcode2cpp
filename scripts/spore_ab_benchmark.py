@@ -311,6 +311,7 @@ def pipeline(args):
     t0 = time.time()
     matched, failure = False, None
     feedback = ""
+    best_source, best_score = None, None
     try:
         for n in range(args.rounds):
             remaining = TIME_BUDGET - (time.time() - t0)
@@ -367,6 +368,8 @@ def pipeline(args):
                         if v["match"]:
                             matched = True
                             break
+                        if v["symbol"] and (best_score is None or (rd, bd) < best_score):
+                            best_score, best_source = (rd, bd), source.read_bytes()
                     if matched:
                         break
                     source.write_text(cpp.rstrip() + "\n")
@@ -376,6 +379,18 @@ def pipeline(args):
                     trials.append({"round": n, "kind": "c2scope_error", "error": str(e)})
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
         failure = str(e)
+    # Preserve a compiler-verified improvement as the shared handoff.
+    if not matched and best_source is not None:
+        source.write_bytes(best_source)
+    handoff_sha = None
+    handoff_verification = None
+    if any(x.get("kind") == "model" for x in trials) and source.is_file():
+        handoff_verification = verify(checkout, address, base / "pipeline/handoff-check.log")
+        if handoff_verification["symbol"] or handoff_verification["match"]:
+            handoff = base / "pipeline/handoff.cpp"
+            handoff.write_bytes(source.read_bytes())
+            handoff_sha = sha(handoff.read_bytes())
+            matched = matched or handoff_verification["match"]
     after = snapshot_limits()
     totals = {
         key: sum((u.get("usage") or {}).get(key, 0) for u in tokens)
@@ -383,6 +398,8 @@ def pipeline(args):
     }
     save(destination, {
         "arm": "pipeline", "model": MODEL, "match": matched, "error": failure,
+        "handoff_sha256": handoff_sha, "handoff_verification": handoff_verification,
+        "best_c2scope_score": list(best_score) if best_score is not None else None,
         "total_tokens": totals, "model_calls": tokens, "attempts": trials,
         "source_sha256": sha(source.read_bytes()) if source.is_file() else None, "seconds": time.time() - t0,
         "allowance_before": before, "allowance_after": after,
