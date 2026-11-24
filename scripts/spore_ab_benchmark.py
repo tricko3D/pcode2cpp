@@ -469,11 +469,12 @@ def agent(args):
     destination = base / "agent/result.json"
     if destination.exists():
         raise RuntimeError("Agent already recorded; refusing to overwrite")
+    handoff_hash, _ = handoff_to_refinement(base, info, "agent")
     address = info["target"]["address"]
     prompt = (
-        "Read AGENTS.md and work/scratch/evidence.md. "
+        "Read AGENTS.md, work/scratch/evidence.md and work/scratch/refine_prompt.md. "
         "This is a Spore byte-matching experiment for " + address + ". "
-        "Implement the completely missing function in " + info["target_source"] + ". "
+        "Refine the existing pcode2cpp candidate in " + info["target_source"] + ". "
         "You receive exactly the same Ghidra evidence used by the model-only arm. "
         "Achieve a BYTE-EXACT MATCH, not just equivalence. "
         "Use the existing VC9/check.py, C2Scope and other local verification tools. "
@@ -512,6 +513,7 @@ def agent(args):
     save(destination, {
         "arm": "agent", "model": MODEL, "match": final["match"],
         "verification": final, "exit": rc, "stderr_tail": stderr[-1000:],
+        "starting_source_sha256": handoff_hash,
         "total_tokens": turns[-1] if turns else {},
         "all_turn_usage": turns, "tool_invocations": tools,
         "source_sha256": sha(source.read_bytes()) if source.is_file() else None, "seconds": time.time() - t0,
