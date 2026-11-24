@@ -279,6 +279,17 @@ def retail_assembly(checkout, address, output):
 
 def mechanical(checkout, address, source, symbol, folder, workers, limit, flags):
     folder.mkdir(parents=True, exist_ok=True)
+    # C2Scope runs from its own repository, so Spore-relative include flags
+    # must become absolute while keeping the actual VC9 optimization flags.
+    native_flags = []
+    for flag in flags:
+        if flag.startswith("/I") and len(flag) > 2:
+            include = Path(flag[2:])
+            if not include.is_absolute():
+                include = checkout / include
+            native_flags.append("/I" + str(include))
+        else:
+            native_flags.append(flag)
     asm = folder / "original.s"
     retail_assembly(checkout, address, asm)
     cmd = [
@@ -286,7 +297,7 @@ def mechanical(checkout, address, source, symbol, folder, workers, limit, flags)
         "--func", symbol, "--asm-vs", str(asm),
         "--families", A.DEFAULT_FAMILIES, "--jobs", str(workers),
         "--limit", str(limit), "--max-combo", "2", "--verify", "8",
-        "--c2", "15.00", "--", *flags
+        "--c2", "15.00", "--", *native_flags
     ]
     env = os.environ.copy()
     env["C2TRACE_REMOTE"] = "0"
