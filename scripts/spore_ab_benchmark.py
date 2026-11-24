@@ -73,6 +73,8 @@ def allowance(before, after):
     output = {}
     if not before or not after:
         return {"unavailable": "No Codex rate-limit snapshot"}
+    if before.get("timestamp") == after.get("timestamp"):
+        return {"unavailable": "No fresh Codex limit snapshot after this run"}
     for window in ("primary", "secondary"):
         b = before["limits"].get(window) or {}
         a = after["limits"].get(window) or {}
@@ -221,6 +223,8 @@ def handoff_to_refinement(base, info, arm):
     digest = sha(contents)
     if previous.get("handoff_sha256") != digest:
         raise RuntimeError("Recorded pipeline handoff has changed")
+    if previous.get("match"):
+        raise RuntimeError("pcode2cpp already achieved byte MATCH; no Codex refinement needed")
     checkout = base / arm / "spore"
     source = checkout / info["target_source"]
     expected = f"// @ {info['target']['address']}\n// No implementation yet.\n"
@@ -405,6 +409,10 @@ def pipeline(args):
         "allowance_before": before, "allowance_after": after,
         "allowance_change": allowance(before, after),
     })
+    if handoff_sha:
+        print("Shared pipeline handoff SHA256:", handoff_sha, flush=True)
+    else:
+        print("No compiler-valid pipeline candidate available for refinement.", flush=True)
     print("Saved:", destination)
 
 
