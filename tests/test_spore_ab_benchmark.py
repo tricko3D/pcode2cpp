@@ -22,6 +22,14 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("T.stale", S.SELECTOR)
         self.assertIn("T.new_source_path", S.SELECTOR)
 
+    def test_single_run_action_is_supported(self):
+        self.assertIn("run", B.main.__code__.co_consts or ())
+        # The runner must execute the shared pipeline before its refinements.
+        import inspect
+        body = inspect.getsource(B.main)
+        self.assertLess(body.find("pipeline(args)"), body.find("isolated(args)"))
+        self.assertLess(body.find("isolated(args)"), body.find("agent(args)"))
+
     def test_rate_change_same_reset_and_reset_during_run(self):
         before = {"limits": {
             "primary": {"resets_at": 10, "window_minutes": 300, "used_percent": 4.0},
