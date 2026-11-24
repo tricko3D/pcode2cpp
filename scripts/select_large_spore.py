@@ -14,18 +14,26 @@ import sys
 
 
 SELECTOR = r'''
-import json, os, sys
+import json, os, sys, time
 root = os.path.abspath(".")
 sys.path[:0] = [root + "/tools/contrib", root + "/tools/matching",
                 root + "/tools/difftest", root + "/tools/ci"]
 import task as T
 
 minimum, maximum = map(int, sys.argv[1:3])
+start = time.monotonic()
+def stage(label):
+    print(f"[selection +{time.monotonic()-start:.1f}s] {label}", file=sys.stderr, flush=True)
+stage("Reading retail fingerprints, manifests and unstarted work")
 candidates = T.never_tried(maximum)
+stage(f"Candidate inventory loaded ({len(candidates)} functions)")
 marked = T.marked()
+stage("Checked existing source definitions")
 shapes = T.shape_only()
 equivalent = T.equivalent()
+stage("Checked matching-shape and equivalent records")
 claims = T.claims()
+stage("Checked active claims")
 if claims is None:
     raise SystemExit("No live claims list; aborting instead of risking an active claim")
 valid = [
@@ -48,10 +56,12 @@ def select(spore: Path, minimum: int, maximum: int):
         str(spore / ".venv/bin/python"), "-c", SELECTOR,
         str(minimum), str(maximum),
     ]
+    print("Selecting a large, not-yet-decompiled function from Spore...", file=sys.stderr, flush=True)
+    # Show selector progress immediately; only capture the final machine-readable JSON.
     run = subprocess.run(command, cwd=spore, text=True,
-                         capture_output=True, timeout=360, check=False)
+                         stdout=subprocess.PIPE, timeout=240, check=False)
     if run.returncode:
-        raise RuntimeError((run.stdout + run.stderr)[-4000:])
+        raise RuntimeError(run.stdout[-4000:] + f" (selector exit {run.returncode})")
     prefix = "BENCHMARK_SELECTION_JSON="
     line = next((l for l in run.stdout.splitlines() if l.startswith(prefix)), None)
     if not line:
