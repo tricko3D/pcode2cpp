@@ -224,6 +224,8 @@ def handoff_to_refinement(base, info, arm):
     digest = sha(contents)
     if previous.get("handoff_sha256") != digest:
         raise RuntimeError("Recorded pipeline handoff has changed")
+    if not previous.get("pipeline_complete"):
+        raise RuntimeError("Mechanical matching stage incomplete, refusing Codex refinement")
     if previous.get("match"):
         raise RuntimeError("pcode2cpp already achieved byte MATCH; no Codex refinement needed")
     checkout = base / arm / "spore"
@@ -328,6 +330,10 @@ def pipeline(args):
     matched, failure = False, None
     feedback = ""
     best_source, best_score = None, None
+    c2scope_attempts = 0
+    c2scope_completed = 0
+    c2scope_skipped = 0
+    c2scope_errors = 0
     try:
         for n in range(args.rounds):
             remaining = TIME_BUDGET - (time.time() - t0)
@@ -361,46 +367,90 @@ def pipeline(args):
             (logs / f"candidate_{n:02d}.cpp").write_text(cpp.rstrip() + "\n")
             result = verify(checkout, address, logs / f"check_{n:02d}.log")
             trials.append({"round": n, "kind": "model", "source_sha256": sha(cpp.encode()), **result})
-            print(f"Pipeline model round {n + 1}: {'MATCH' if result['match'] else 'not matched'}", flush=True)
             if result["match"]:
+                print(f"Pipeline model round {n + 1}: byte-exact MATCH, C2Scope unnecessary", flush=True)
                 matched = True
                 break
             feedback = result["feedback"]
-            if result["symbol"] and result["compiler_flags"] and args.sweep_limit > 0:
-                try:
-                    folder = logs / f"c2scope_{n:02d}"
-                    ranked, count = mechanical(
-                        checkout, address, source, result["symbol"], folder,
-                        args.workers, args.sweep_limit, result["compiler_flags"])
-                    trials.append({"round": n, "kind": "c2scope", "measured": count,
-                                   "ranked_scores": [[name, rd, bd] for name, rd, bd, _ in ranked]})
-                    for i, (name, rd, bd, path) in enumerate(ranked):
-                        if not path.is_file():
-                            continue
-                        source.write_bytes(path.read_bytes())
-                        v = verify(checkout, address, folder / f"candidate_{i}.log")
-                        trials.append({"round": n, "kind": "c2scope_check",
-                                       "variant": name, "rdiff": rd, "bdiff": bd, **v})
-                        if v["match"]:
-                            matched = True
-                            break
-                        if v["symbol"] and (best_score is None or (rd, bd) < best_score):
-                            best_score, best_source = (rd, bd), source.read_bytes()
-                    if matched:
+            if args.sweep_limit == 0:
+                why = "disabled by --sweep-limit 0"
+            elif not result["symbol"]:
+                why = "no compiled function symbol (probably compile failed); check " + result["log"]
+            elif not result["compiler_flags"]:
+                why = "no compiler flags parsed; check " + result["log"]
+            else:
+                why = None
+            if why:
+                c2scope_skipped += 1
+                trials.append({"round": n, "kind": "c2scope_skipped", "reason": why})
+                print(f"Pipeline round {n + 1}: no MATCH; C2Scope SKIPPED: {why}",
+                      flush=True)
+                continue
+
+            print(f"Pipeline round {n + 1}: no MATCH; starting C2Scope "
+                  f"({args.sweep_limit} variants max, {args.workers} workers)",
+                  flush=True)
+            c2scope_attempts += 1
+            try:
+                folder = logs / f"c2scope_{n:02d}"
+                ranked, count = mechanical(
+                    checkout, address, source, result["symbol"], folder,
+                    args.workers, args.sweep_limit, result["compiler_flags"])
+                trials.append({"round": n, "kind": "c2scope", "measured": count,
+                               "ranked_scores": [[name, rd, bd] for name, rd, bd, _ in ranked]})
+                print(f"Pipeline round {n + 1}: C2Scope measured {count} variants; "
+                      f"checking {len(ranked)} promising candidates",
+                      flush=True)
+                if count > 0:
+                    c2scope_completed += 1
+                else:
+                    c2scope_errors += 1
+                    trials.append({"round": n, "kind": "c2scope_error",
+                                   "error": "C2Scope returned no measured variants",
+                                   "log": str(folder / "rwsweep.log")})
+                    print(f"Pipeline round {n + 1}: C2Scope returned NO measured variants; "
+                          f"see {folder / 'rwsweep.log'}", flush=True)
+                for i, (name, rd, bd, path) in enumerate(ranked):
+                    if not path.is_file():
+                        continue
+                    source.write_bytes(path.read_bytes())
+                    v = verify(checkout, address, folder / f"candidate_{i}.log")
+                    trials.append({"round": n, "kind": "c2scope_check",
+                                   "variant": name, "rdiff": rd, "bdiff": bd, **v})
+                    if v["match"]:
+                        matched = True
+                        print(f"Pipeline round {n + 1}: C2Scope candidate {name} MATCH",
+                              flush=True)
                         break
-                    source.write_text(cpp.rstrip() + "\n")
-                    feedback += "\nC2Scope measured:\n" + json.dumps(
-                        [{"name": x[0], "rdiff": x[1], "bdiff": x[2]} for x in ranked])
-                except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
-                    trials.append({"round": n, "kind": "c2scope_error", "error": str(e)})
+                    if v["symbol"] and (best_score is None or (rd, bd) < best_score):
+                        best_score, best_source = (rd, bd), source.read_bytes()
+                if matched:
+                    break
+                source.write_text(cpp.rstrip() + "\n")
+                feedback += "\nC2Scope measured:\n" + json.dumps(
+                    [{"name": x[0], "rdiff": x[1], "bdiff": x[2]} for x in ranked])
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
+                c2scope_errors += 1
+                detail = str(e)
+                trials.append({"round": n, "kind": "c2scope_error", "error": detail})
+                print(f"Pipeline round {n + 1}: C2Scope FAILED: {detail}", flush=True)
+                source.write_text(cpp.rstrip() + "\n")
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as e:
         failure = str(e)
     # Preserve a compiler-verified improvement as the shared handoff.
     if not matched and best_source is not None:
         source.write_bytes(best_source)
+    # Never hand off a reconstruction that silently omitted the mechanical
+    # stage. A full byte MATCH before C2Scope is the only legitimate exception.
+    pipeline_complete = matched or c2scope_completed > 0
+    if not pipeline_complete:
+        failure = (failure or "C2Scope did not successfully measure any variants. "
+                   "The reconstruction pipeline is incomplete; Codex refinements "
+                   "are blocked to avoid invalid usage comparisons.")
+        print("PIPELINE INCOMPLETE: " + failure, flush=True)
     handoff_sha = None
     handoff_verification = None
-    if any(x.get("kind") == "model" for x in trials) and source.is_file():
+    if pipeline_complete and any(x.get("kind") == "model" for x in trials) and source.is_file():
         handoff_verification = verify(checkout, address, base / "pipeline/handoff-check.log")
         if handoff_verification["symbol"] or handoff_verification["match"]:
             handoff = base / "pipeline/handoff.cpp"
@@ -414,6 +464,11 @@ def pipeline(args):
     }
     save(destination, {
         "arm": "pipeline", "model": MODEL, "match": matched, "error": failure,
+        "pipeline_complete": pipeline_complete,
+        "c2scope_attempts": c2scope_attempts,
+        "c2scope_completed": c2scope_completed,
+        "c2scope_skipped": c2scope_skipped,
+        "c2scope_errors": c2scope_errors,
         "handoff_sha256": handoff_sha, "handoff_verification": handoff_verification,
         "best_c2scope_score": list(best_score) if best_score is not None else None,
         "total_tokens": totals, "model_calls": tokens, "attempts": trials,
@@ -686,8 +741,9 @@ def main():
             pipeline(args)
             base = experiment_dir(args.address)
             data = read(base / "pipeline/result.json")
-            if not data.get("handoff_sha256"):
-                print("Pipeline produced no verifiable candidate; saving partial report.", flush=True)
+            if not data.get("pipeline_complete") or not data.get("handoff_sha256"):
+                print("Pipeline did not finish mechanical verification or produce a valid "
+                      "candidate. Codex refinement will NOT run.", flush=True)
                 report(args)
                 return 2
             if data.get("match"):
