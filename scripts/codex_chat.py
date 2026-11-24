@@ -10,7 +10,10 @@ import shutil
 import subprocess
 import tempfile
 
-from .model_client import ModelError
+try:
+    from .model_client import ModelError
+except ImportError:
+    from model_client import ModelError
 
 
 _BODY_SCHEMA = {
