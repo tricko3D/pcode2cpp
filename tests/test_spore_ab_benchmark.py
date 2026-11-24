@@ -13,14 +13,55 @@ from scripts import select_large_spore as S
 
 
 class BenchmarkTests(unittest.TestCase):
-    def test_size_range_and_claim_checks_are_part_of_selection(self):
+    def test_selector_uses_legacy_compatible_spore_helpers(self):
         self.assertIn("T.never_tried", S.SELECTOR)
         self.assertIn("T.marked()", S.SELECTOR)
-        self.assertIn("T.shape_only()", S.SELECTOR)
-        self.assertIn("T.equivalent()", S.SELECTOR)
-        self.assertIn("T.claims()", S.SELECTOR)
-        self.assertIn("T.stale", S.SELECTOR)
-        self.assertIn("T.new_source_path", S.SELECTOR)
+        self.assertIn("read_shapes()", S.SELECTOR)
+        self.assertIn("read_equivalent()", S.SELECTOR)
+        self.assertIn("read_claims()", S.SELECTOR)
+        self.assertNotIn("T.shape_only()", S.SELECTOR)
+        self.assertNotIn("T.equivalent()", S.SELECTOR)
+        self.assertNotIn("T.stale(", S.SELECTOR)
+
+    def test_selector_on_legacy_task_module(self):
+        # Regression: the local Spore checkout may not implement shape_only,
+        # equivalent, claims, stale or new_source_path.
+        import datetime
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tools/contrib").mkdir(parents=True)
+            (root / ".venv/bin").mkdir(parents=True)
+            (root / ".venv/bin/python").symlink_to(sys.executable)
+            (root / "tools/contrib/task.py").write_text(
+                "def never_tried(maximum):\\n"
+                "    return [(1530,0x00abcdef,'','',''),"
+                "(1400,0x00abcdee,'','',''),"
+                "(1300,0x00abcded,'','',''),"
+                "(1200,0x00abcdec,'','',''),"
+                "(1100,0x00abcdeb,'','',''),"
+                "(1000,0x00abcdea,'','',''),"
+                "(900,0x00abcde9,'','','')]\\n"
+                "def marked(): return {0x00abcdef}\\n"
+            )
+            (root / "match").mkdir()
+            (root / "match/shape_only.txt").write_text("00abcdee - foo\\n")
+            equivalent = root / "match/slices/s00abcded"
+            equivalent.mkdir(parents=True)
+            (equivalent / "equivalent.txt").write_text("one two 00abcded\\n")
+            existing = root / "match/slices/s00abcdeb"
+            existing.mkdir(parents=True)
+            (existing / "s00abcdeb.cpp").write_text("already present\\n")
+            (root / "work").mkdir()
+            day = datetime.datetime.now(datetime.timezone.utc).date()
+            (root / "work/claims.txt").write_text(
+                f"0x00abcdec #11 someone {day.isoformat()}\\n"
+            )
+            results = S.select(root, 768, 1536)
+            self.assertEqual(
+                [item["address"] for item in results],
+                ["0x00abcdea", "0x00abcde9"],
+            )
 
     def test_single_run_action_is_supported(self):
         # Run must select its own address rather than fail argparse validation.
