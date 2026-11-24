@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare tool-free pcode2cpp reconstruction with a normal Codex agent.
+"""Compare Codex refinements from the same initial pcode2cpp pipeline candidate.
 
 For a new function the established run_pipeline.py's VC9/Unicorn/angr adapter
 does not apply. This runner uses pcode2cpp's Ghidra/prompt/model components,
@@ -171,7 +171,7 @@ def prepare(args):
             scratch = target_dir / "work/scratch"
             scratch.mkdir(parents=True, exist_ok=True)
             (scratch / "evidence.md").write_text(common, encoding="utf-8")
-            # Negative control: prior to either arm, the blank target MUST NOT match.
+            # Negative control: all arms initially lack a source implementation.
             baseline = verify(target_dir, address, target_dir.parent / "baseline_check.log")
             if baseline["match"]:
                 raise RuntimeError(f"Pre-run baseline unexpectedly matches: {target_dir}")
@@ -185,7 +185,7 @@ def prepare(args):
             "evidence_sha256": sha(common.encode("utf-8")),
             "target_source": relpath,
             "setup_date_unix": time.time(),
-            "arms": ["pipeline", "isolated", "agent"],
+            "stages": ["shared-pipeline", "isolated-final-refinement", "agentic-final-refinement"],
             "tool_free_rounds": args.rounds,
             "c2scope_limit": args.sweep_limit,
             "wall_time_budget_seconds_per_arm": TIME_BUDGET,
@@ -207,6 +207,39 @@ def load_arm(address, arm):
         raise ValueError("Experiment address does not match metadata")
     checkout = base / arm / "spore"
     return base, info, checkout, checkout / info["target_source"]
+
+
+
+def handoff_to_refinement(base, info, arm):
+    """Install the exact same completed pipeline source in either refinement arm."""
+    previous_file = base / "pipeline/result.json"
+    handoff = base / "pipeline/handoff.cpp"
+    if not previous_file.is_file() or not handoff.is_file():
+        raise RuntimeError("Run the pipeline first: no candidate handoff exists")
+    previous = read(previous_file)
+    contents = handoff.read_bytes()
+    digest = sha(contents)
+    if previous.get("handoff_sha256") != digest:
+        raise RuntimeError("Recorded pipeline handoff has changed")
+    checkout = base / arm / "spore"
+    source = checkout / info["target_source"]
+    expected = f"// @ {info['target']['address']}\\n// No implementation yet.\\n"
+    if source.read_text(encoding="utf-8") != expected:
+        raise RuntimeError(f"Refinement source is not pristine: {source}")
+    source.write_bytes(contents)
+    feedback = (previous.get("handoff_verification") or {}).get("feedback", "")
+    prompt = (
+        f"Target: {info['target']['address']} ({info['target']['retail_bytes']} retail bytes).\\n"
+        "The target C++ file contains the candidate produced by pcode2cpp. "
+        "IMPROVE it toward a VC9 byte-exact MATCH, not equivalence. "
+        "Preserve observable semantics, ABI and calls. "
+        "Do not inspect history or retrieve an existing solution.\\n\\n"
+        "Final pipeline compiler and fingerprint feedback:\\n" + feedback
+    )
+    scratch = checkout / "work/scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / "refine_prompt.md").write_text(prompt, encoding="utf-8")
+    return digest, prompt
 
 
 def verify(checkout, address, path):
