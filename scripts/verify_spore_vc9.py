@@ -18,6 +18,11 @@ import re
 import subprocess
 import sys
 
+try:
+    from .fixed_width_types import CPP_FIXED_WIDTH_TYPES
+except ImportError:
+    from fixed_width_types import CPP_FIXED_WIDTH_TYPES
+
 ROOT = Path(__file__).resolve().parents[1]
 VA = 0x00672CF0
 
@@ -51,8 +56,8 @@ def render_vc9_source(candidate_text: str) -> str:
     body = candidate_body(candidate_text)
     return (
         "// Generated test wrapper, never published in match/slices.\n"
-        "// VC9 does not provide <cstdint>; the original source uses uint16_t.\n"
-        "typedef unsigned short uint16_t;\n\n"
+        "// VC9 predates <cstdint>; the probe and VC9 share fixed-width aliases.\n"
+        + CPP_FIXED_WIDTH_TYPES + "\n"
         "struct InklingCandidate_s00672cf0 {\n"
         "    int* __thiscall FUN_00672750(int* begin, int* end);\n"
         "    int* __thiscall FUN_00672cf0(int* param_2);\n"
