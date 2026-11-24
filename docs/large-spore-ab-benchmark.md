@@ -58,7 +58,16 @@ The `run` action automatically picks an eligible, never-decompiled large
 function; exports its Ghidra evidence; runs pcode2cpp; saves its final C++
 candidate; then compares isolated versus agentic Codex improvement of that
 same candidate; finally saves the token and usage comparison. The selector
-reports its progress so a large source scan is not silent.
+reports its progress so a large source scan is not silent. Previous experiment
+directories are preserved, and a fresh automatic run selects another eligible
+function instead of overwriting a completed or interrupted run.
+
+C2Scope is a required pipeline stage unless VC9 already reports a byte-exact
+MATCH. Each round explicitly prints C2Scope STARTED, SKIPPED or FAILED with
+a reason. If the mechanical stage never successfully measures any variants,
+the pipeline is marked incomplete, saves its logs and token usage, and **does not
+launch either Codex refinement**. Existing experiment logs can be inspected
+without running the initial model calls again.
 
 If an environment failure interrupts the run, the experiment retains data
 for completed stages; individual `pipeline`, `isolated`, `agent` and
