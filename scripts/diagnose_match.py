@@ -130,11 +130,14 @@ def validate_answer(answer):
             raise ValueError("Missing diagnosis field " + key)
     if answer["confidence"] not in ("low", "medium", "high"):
         raise ValueError("Invalid confidence")
-    if not isinstance(answer["alternative_causes"], list) or len(answer["alternative_causes"]) > 2:
-        raise ValueError("Expected zero to two alternative hypotheses")
+    if (not isinstance(answer["alternative_causes"], list)
+            or len(answer["alternative_causes"]) > 2
+            or not all(isinstance(x, str) for x in answer["alternative_causes"])):
+        raise ValueError("Expected zero to two text alternative hypotheses")
     if (not isinstance(answer["techniques_considered"], list)
-            or not 2 <= len(answer["techniques_considered"]) <= 5):
-        raise ValueError("Expected two to five relevant techniques")
+            or not 2 <= len(answer["techniques_considered"]) <= 5
+            or not all(isinstance(x, str) for x in answer["techniques_considered"])):
+        raise ValueError("Expected two to five text technique names")
     return answer
 
 
