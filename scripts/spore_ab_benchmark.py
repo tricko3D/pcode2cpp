@@ -525,85 +525,121 @@ def agent(args):
 
 
 def report(args):
+    """Report common pipeline cost and two refinements of its identical output."""
     base = experiment_dir(args.address)
     info = read(base / "experiment.json")
-    comparison = {
-        "target": info["target"], "model": MODEL,
+    stages = {}
+    for name in ("pipeline", "isolated", "agent"):
+        file = base / name / "result.json"
+        stages[name] = read(file) if file.is_file() else {"status": "not run"}
+
+    def usage_of(data):
+        u = data.get("total_tokens") or {}
+        inp = u.get("input_tokens", 0)
+        cached = u.get("cached_input_tokens", 0)
+        out = u.get("output_tokens", 0)
+        return {
+            "input_tokens": inp,
+            "cached_input_tokens": cached,
+            "uncached_input_tokens": max(inp - cached, 0),
+            "output_tokens": out,
+            "total_tokens": inp + out,
+        }
+
+    def pct(data, window):
+        return ((data.get("allowance_change") or {}).get(window) or {}).get(
+            "estimated_percentage_point_change")
+
+    common = stages["pipeline"]
+    first = stages["isolated"]
+    second = stages["agent"]
+    handoff_hash = common.get("handoff_sha256")
+    hashes = {
+        "pipeline_handoff": handoff_hash,
+        "isolated_start": first.get("starting_source_sha256"),
+        "agent_start": second.get("starting_source_sha256"),
+    }
+    comparable = bool(handoff_hash and hashes["isolated_start"] == handoff_hash
+                      and hashes["agent_start"] == handoff_hash)
+    rows = []
+    for name, run_data in (("isolated", first), ("agent", second)):
+        shared = usage_of(common)
+        incremental = usage_of(run_data)
+        full = {key: shared[key] + incremental[key] for key in shared}
+        rows.append({
+            "approach": "pipeline + " + name,
+            "byte_match": run_data.get("match"),
+            "starting_candidate_sha256": run_data.get("starting_source_sha256"),
+            "shared_pipeline_tokens": shared,
+            "refinement_tokens": incremental,
+            "end_to_end_tokens": full,
+            "shared_pipeline_five_hour_pp": pct(common, "primary"),
+            "refinement_five_hour_pp": pct(run_data, "primary"),
+            "shared_pipeline_weekly_pp": pct(common, "secondary"),
+            "refinement_weekly_pp": pct(run_data, "secondary"),
+            "refinement_seconds": run_data.get("seconds"),
+        })
+    result = {
+        "target": info["target"],
+        "model": MODEL,
         "baseline_commit": info["baseline_commit"],
         "context_sha256": info["context_sha256"],
         "evidence_sha256": info["evidence_sha256"],
-        "arms": {},
+        "comparison_valid_identical_starting_candidates": comparable,
+        "seed_hashes": hashes,
+        "common_pipeline": common,
+        "refinements": {"isolated": first, "agent": second},
+        "comparisons": rows,
     }
-    for arm in ("pipeline", "isolated", "agent"):
-        file = base / arm / "result.json"
-        comparison["arms"][arm] = read(file) if file.is_file() else {"status": "not run"}
-    scorecard = {}
-    for arm, value in comparison["arms"].items():
-        usage = value.get("total_tokens") or {}
-        inp = usage.get("input_tokens", 0)
-        cached = usage.get("cached_input_tokens", 0)
-        out = usage.get("output_tokens", 0)
-        rate = value.get("allowance_change") or {}
-        scorecard[arm] = {
-            "verified_byte_match": value.get("match"),
-            "model": value.get("model"),
-            "input_tokens": inp,
-            "cached_input_tokens": cached,
-            "uncached_input_tokens": max(0, inp - cached),
-            "output_tokens": out,
-            "total_tokens": inp + out,
-            "model_calls_or_turns": (len(value.get("model_calls") or [])
-                                    if arm != "agent" else len(value.get("all_turn_usage") or [])),
-            "tools_invoked": value.get("tool_invocations") if arm == "agent" else 0,
-            "compiler_checks": (sum(x.get("kind") in ("model", "c2scope_check")
-                                    for x in value.get("attempts", []))
-                                if arm == "pipeline" else (1 if value.get("verification") else 0)),
-            "c2scope_measured": (sum(x.get("measured", 0) for x in value.get("attempts", [])
-                                    if x.get("kind") == "c2scope") if arm == "pipeline" else 0),
-            "elapsed_seconds": value.get("seconds"),
-            "five_hour_allowance_delta_pp_approx":
-                (rate.get("primary") or {}).get("estimated_percentage_point_change"),
-            "weekly_allowance_delta_pp_approx":
-                (rate.get("secondary") or {}).get("estimated_percentage_point_change"),
-        }
-    comparison["scorecard"] = scorecard
-    save(base / "comparison.json", comparison)
+    save(base / "comparison.json", result)
     lines = [
-        "# Spore byte-match A/B comparison",
+        "# Spore byte-match refinement comparison",
         "",
-        "Target: " + info["target"]["address"] + " (" + str(info["target"]["retail_bytes"]) + " bytes)",
+        f"Target: {info['target']['address']} ({info['target']['retail_bytes']} retail bytes)",
         "Model: " + MODEL,
         "Spore commit: " + info["baseline_commit"],
+        "Identical starting C++ candidate: " + ("YES" if comparable else "NOT VERIFIED"),
         "",
-        "| Metric | Pipeline | Isolated | Agentic |",
-        "|---|---:|---:|---:|",
+        "The pcode2cpp pipeline is the COMMON first stage, not a competing arm.",
+        "Both final refinements receive exactly the same pipeline output.",
+        "",
+        "| Metric | Pipeline + isolated Codex | Pipeline + agentic Codex |",
+        "|---|---:|---:|",
     ]
     metrics = [
-        ("verified_byte_match", "Byte-exact MATCH"),
-        ("total_tokens", "Total tokens"),
-        ("uncached_input_tokens", "Uncached input"),
-        ("cached_input_tokens", "Cached input"),
-        ("output_tokens", "Output tokens"),
-        ("compiler_checks", "Direct VC9 checks"),
-        ("c2scope_measured", "C2Scope variants measured"),
-        ("tools_invoked", "Agent tool invocations"),
-        ("elapsed_seconds", "Elapsed seconds"),
-        ("five_hour_allowance_delta_pp_approx", "5h allowance delta (pp, approximate)"),
-        ("weekly_allowance_delta_pp_approx", "Weekly allowance delta (pp, approximate)"),
+        ("byte_match", "Final verified byte-exact MATCH"),
+        ("refinement_seconds", "Final refinement elapsed seconds"),
     ]
-    for key, label in metrics:
-        lines.append("| " + label + " | " +
-            " | ".join(str(scorecard[arm][key]) for arm in ("pipeline", "isolated", "agent")) + " |")
-    lines.extend(["", "Rate-limit readings are rounded and may be stale or affected by other Codex sessions.",
-                  "All success results must be backed by the real Spore check.py MATCH output."])
+    for key, title in metrics:
+        lines.append("| " + title + " | " + " | ".join(str(r[key]) for r in rows) + " |")
+    for section, title in [
+        ("shared_pipeline_tokens", "Common pipeline tokens"),
+        ("refinement_tokens", "Additional Codex refinement tokens"),
+        ("end_to_end_tokens", "End-to-end tokens"),
+    ]:
+        for key in ("total_tokens", "uncached_input_tokens", "cached_input_tokens", "output_tokens"):
+            lines.append("| " + title + " (" + key + ") | " +
+                         " | ".join(str(r[section][key]) for r in rows) + " |")
+    for key, title in [
+        ("shared_pipeline_five_hour_pp", "Common pipeline 5h allowance change (pp, approx.)"),
+        ("refinement_five_hour_pp", "Extra refinement 5h allowance change (pp, approx.)"),
+        ("shared_pipeline_weekly_pp", "Common pipeline weekly change (pp, approx.)"),
+        ("refinement_weekly_pp", "Extra refinement weekly change (pp, approx.)"),
+    ]:
+        lines.append("| " + title + " | " + " | ".join(str(r[key]) for r in rows) + " |")
+    lines.extend([
+        "",
+        "Percentages are rounded and may reset between stages; do not combine",
+        "percentage-point changes across different rate-limit windows.",
+        "All successful matches must be independently verified by Spore check.py.",
+    ])
     (base / "comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    for arm, value in comparison["arms"].items():
-        usage = value.get("total_tokens") or {}
-        rate = value.get("allowance_change") or {}
-        first = (rate.get("primary") or {}).get("estimated_percentage_point_change")
-        second = (rate.get("secondary") or {}).get("estimated_percentage_point_change")
-        print(f"{arm}: MATCH={value.get('match')}, tokens={usage}, "
-              f"5h approx delta={first}pp, weekly approx delta={second}pp")
+    for row in rows:
+        print(f"{row['approach']}: MATCH={row['byte_match']}, "
+              f"refinement_tokens={row['refinement_tokens']['total_tokens']}, "
+              f"total_tokens={row['end_to_end_tokens']['total_tokens']}, "
+              f"refinement_5h_delta≈{row['refinement_five_hour_pp']}pp")
+    print("Same starting candidate:", comparable)
     print("Saved:", base / "comparison.json")
     print("Saved:", base / "comparison.md")
 
