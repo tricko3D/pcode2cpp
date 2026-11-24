@@ -35,6 +35,7 @@ valid = [
     and address not in marked
     and address not in shapes
     and address not in equivalent
+    and not os.path.exists(T.new_source_path(address))
     and not any(not T.stale(claim) for claim in claims.get(address, []))
 ]
 valid.sort(key=lambda x: (-x["retail_bytes"], x["address"]))
