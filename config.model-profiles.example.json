@@ -42,6 +42,11 @@
           "type": "json_object"
         }
       }
+    },
+    "codex-plus": {
+      "provider": "codex_cli",
+      "model": "default",
+      "timeout_seconds": 1800
     }
   }
 }
