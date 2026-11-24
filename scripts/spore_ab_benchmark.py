@@ -73,7 +73,7 @@ def allowance(before, after):
     output = {}
     if not before or not after:
         return {"unavailable": "No Codex rate-limit snapshot"}
-    if before.get("timestamp") == after.get("timestamp"):
+    if before.get("timestamp") is not None and before["timestamp"] == after.get("timestamp"):
         return {"unavailable": "No fresh Codex limit snapshot after this run"}
     for window in ("primary", "secondary"):
         b = before["limits"].get(window) or {}
@@ -196,6 +196,7 @@ def prepare(args):
         print(f"Selected {address}, {selected['retail_bytes']} bytes")
         print("Evidence and baseline saved:", base)
         print("No agent or model has been run yet.")
+        return address
 
     except Exception:
         # A failed Ghidra export or checkout setup must not poison the target.
@@ -248,7 +249,7 @@ def handoff_to_refinement(base, info, arm):
 
 def verify(checkout, address, path):
     p = command([str(checkout / ".venv/bin/python"),
-                 "tools/contrib/check.py", address, "--no-quick"],
+                 "tools/contrib/check.py", address, "--no-quick", "--dry-run"],
                 cwd=checkout, timeout=900)
     result = p.stdout + p.stderr
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,7 +666,7 @@ def report(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=("prepare", "pipeline", "isolated", "agent", "report"))
+    p.add_argument("action", choices=("run", "prepare", "pipeline", "isolated", "agent", "report"))
     p.add_argument("--address", help="0x... address; optional only for prepare")
     p.add_argument("--spore", type=Path, default=Path.home() / "spore-decomp")
     p.add_argument("--min-bytes", type=int, default=768)
@@ -679,8 +680,29 @@ def main():
     if args.rounds < 1 or args.sweep_limit < 0 or args.workers < 1:
         p.error("Invalid budgets")
     try:
-        {"prepare": prepare, "pipeline": pipeline, "isolated": isolated, "agent": agent,
-         "report": report}[args.action](args)
+        if args.action == "run":
+            args.address = prepare(args)
+            print("=== STAGE 1: pcode2cpp initial pipeline ===", flush=True)
+            pipeline(args)
+            base = experiment_dir(args.address)
+            data = read(base / "pipeline/result.json")
+            if not data.get("handoff_sha256"):
+                print("Pipeline produced no verifiable candidate; saving partial report.", flush=True)
+                report(args)
+                return 2
+            if data.get("match"):
+                print("Pipeline already produced a byte-exact MATCH. Refinements unnecessary.", flush=True)
+                report(args)
+                return 0
+            print("=== STAGE 2A: isolated Codex final refinement ===", flush=True)
+            isolated(args)
+            print("=== STAGE 2B: normal agentic Codex final refinement ===", flush=True)
+            agent(args)
+            print("=== FINAL: comparison report ===", flush=True)
+            report(args)
+        else:
+            {"prepare": prepare, "pipeline": pipeline, "isolated": isolated,
+             "agent": agent, "report": report}[args.action](args)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
         print(f"spore_ab_benchmark: {e}", file=sys.stderr)
