@@ -473,7 +473,66 @@ def report(args):
     for arm in ("pipeline", "isolated", "agent"):
         file = base / arm / "result.json"
         comparison["arms"][arm] = read(file) if file.is_file() else {"status": "not run"}
+    scorecard = {}
+    for arm, value in comparison["arms"].items():
+        usage = value.get("total_tokens") or {}
+        inp = usage.get("input_tokens", 0)
+        cached = usage.get("cached_input_tokens", 0)
+        out = usage.get("output_tokens", 0)
+        rate = value.get("allowance_change") or {}
+        scorecard[arm] = {
+            "verified_byte_match": value.get("match"),
+            "model": value.get("model"),
+            "input_tokens": inp,
+            "cached_input_tokens": cached,
+            "uncached_input_tokens": max(0, inp - cached),
+            "output_tokens": out,
+            "total_tokens": inp + out,
+            "model_calls_or_turns": (len(value.get("model_calls") or [])
+                                    if arm != "agent" else len(value.get("all_turn_usage") or [])),
+            "tools_invoked": value.get("tool_invocations") if arm == "agent" else 0,
+            "compiler_checks": (sum(x.get("kind") in ("model", "c2scope_check")
+                                    for x in value.get("attempts", []))
+                                if arm == "pipeline" else (1 if value.get("verification") else 0)),
+            "c2scope_measured": (sum(x.get("measured", 0) for x in value.get("attempts", [])
+                                    if x.get("kind") == "c2scope") if arm == "pipeline" else 0),
+            "elapsed_seconds": value.get("seconds"),
+            "five_hour_allowance_delta_pp_approx":
+                (rate.get("primary") or {}).get("estimated_percentage_point_change"),
+            "weekly_allowance_delta_pp_approx":
+                (rate.get("secondary") or {}).get("estimated_percentage_point_change"),
+        }
+    comparison["scorecard"] = scorecard
     save(base / "comparison.json", comparison)
+    lines = [
+        "# Spore byte-match A/B comparison",
+        "",
+        "Target: " + info["target"]["address"] + " (" + str(info["target"]["retail_bytes"]) + " bytes)",
+        "Model: " + MODEL,
+        "Spore commit: " + info["baseline_commit"],
+        "",
+        "| Metric | Pipeline | Isolated | Agentic |",
+        "|---|---:|---:|---:|",
+    ]
+    metrics = [
+        ("verified_byte_match", "Byte-exact MATCH"),
+        ("total_tokens", "Total tokens"),
+        ("uncached_input_tokens", "Uncached input"),
+        ("cached_input_tokens", "Cached input"),
+        ("output_tokens", "Output tokens"),
+        ("compiler_checks", "Direct VC9 checks"),
+        ("c2scope_measured", "C2Scope variants measured"),
+        ("tools_invoked", "Agent tool invocations"),
+        ("elapsed_seconds", "Elapsed seconds"),
+        ("five_hour_allowance_delta_pp_approx", "5h allowance delta (pp, approximate)"),
+        ("weekly_allowance_delta_pp_approx", "Weekly allowance delta (pp, approximate)"),
+    ]
+    for key, label in metrics:
+        lines.append("| " + label + " | " +
+            " | ".join(str(scorecard[arm][key]) for arm in ("pipeline", "isolated", "agent")) + " |")
+    lines.extend(["", "Rate-limit readings are rounded and may be stale or affected by other Codex sessions.",
+                  "All success results must be backed by the real Spore check.py MATCH output."])
+    (base / "comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     for arm, value in comparison["arms"].items():
         usage = value.get("total_tokens") or {}
         rate = value.get("allowance_change") or {}
@@ -482,6 +541,7 @@ def report(args):
         print(f"{arm}: MATCH={value.get('match')}, tokens={usage}, "
               f"5h approx delta={first}pp, weekly approx delta={second}pp")
     print("Saved:", base / "comparison.json")
+    print("Saved:", base / "comparison.md")
 
 
 def main():
