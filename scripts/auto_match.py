@@ -317,7 +317,8 @@ def snapshot_prepared(repo: Path, candidate: Path, case: Path, tag: str):
         raise RuntimeError(f"VC9 snapshot failed: {(proc.stdout + proc.stderr)[-800:]}")
     state = json.loads(report.read_text(encoding="utf-8"))
     if state.get("status") != "COMPILED":
-        raise RuntimeError(f"VC9 status {state.get('status')}: {state.get('fingerprint')}")
+        detail = state.get("diagnostics") or state.get("fingerprint") or ""
+        raise RuntimeError(f"VC9 status {state.get('status')}: {str(detail)[-2000:]}")
     state["prepared"] = str(prepared)
     return state
 
@@ -362,8 +363,16 @@ class Engine:
             try:
                 state = snapshot_prepared(self.repo, Path(row["path"]), self.store.log_dir, tag)
             except Exception as exc:
-                self.store.update(ident, status="VC9_FAILED", note=str(exc))
+                log_path = self.store.log_dir / f"{tag}.vc9.log"
+                note = str(exc)
+                self.store.update(ident, status="VC9_FAILED", note=note)
                 self.store.debit(1)
+                print(f"  VC9 FAILED: {note}", flush=True)
+                if log_path.is_file():
+                    print(f"  Full worker output: {log_path}", flush=True)
+                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if lines:
+                        print("  Last worker lines:\n    " + "\n    ".join(lines[-12:]), flush=True)
                 return False
             self.store.debit(1)
             if not state.get("callee_symbol_valid"):
