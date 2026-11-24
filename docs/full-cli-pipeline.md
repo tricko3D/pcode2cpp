@@ -40,6 +40,46 @@ C++ source, and assembly to that service. Initial model requests can include
 Ghidra's entire function context and direct callee evidence. No keys are
 written to the request logs. All endpoints must use HTTPS except loopback.
 
+## Use ChatGPT Plus/Codex in the existing full pipeline
+
+The `codex-plus` profile routes the **same** initial reconstruction,
+Clang repair and post-stagnation AI fallback requests through a locally
+authenticated Codex CLI. It does **not** start a separate one-shot pipeline.
+No OpenAI API key is needed; first run `codex login` on the WSL machine.
+If an existing `config.model-profiles.json` does not contain the new profile,
+use the tracked example with `--models config.model-profiles.example.json`,
+without overwriting your local profile configuration.
+
+```bash
+cd ~/pcode2cpp
+git pull --ff-only
+python -u scripts/run_pipeline.py \
+  --address 0x00672cf0 \
+  --context cases/00672cf0/context.json \
+  --models config.model-profiles.example.json \
+  --initial-model codex-plus --fallback-model codex-plus \
+  --repairs 3 \
+  --max-compiles 3000 \
+  --ai-rounds 3 --ai-compiles-per-round 400 \
+  --beam-width 16 --workers 16
+```
+
+This runs the **ordinary** `run_pipeline.py` stages: initial C++ generation,
+up to three syntax repairs if needed, VC9/C2Scope mechanical search,
+Unicorn/angr validation, and Codex fallback proposals with more compilation
+and verification. The previous isolated `scripts/codex_once.py` experiment
+is not needed. The model transport launches `codex exec` in an empty
+temporary directory with read-only sandboxing and rejects observed tool
+invocations. Codex CLI is still an agent harness internally, not a raw
+model/API endpoint, but the integration requests text-only inference.
+Each pipeline model call is a separate Codex exec invocation and uses
+ChatGPT authentication rather than API billing.
+
+The pipeline's `max_tokens` and `temperature` profile fields apply to
+HTTP model providers; the Codex CLI controls inference limits itself.
+`model: default` lets Codex select the configured account model. An
+explicit Codex model identifier can replace `default` in the profile.
+
 ## Full process, starting from Ghidra
 
 ```bash
