@@ -23,10 +23,20 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("T.new_source_path", S.SELECTOR)
 
     def test_single_run_action_is_supported(self):
-        # The runner must execute the shared pipeline before its refinements.
+        # Run must select its own address rather than fail argparse validation.
+        import contextlib
+        import io
+        import sys
+        error = io.StringIO()
+        with patch.object(sys, "argv", ["spore_ab_benchmark.py", "run"]), \
+             patch.object(B, "prepare", side_effect=RuntimeError("prepare reached")), \
+             contextlib.redirect_stderr(error):
+            result = B.main()
+        self.assertEqual(result, 2)
+        self.assertIn("prepare reached", error.getvalue())
+        # Pipeline must complete before either refinement starts.
         import inspect
         body = inspect.getsource(B.main)
-        self.assertIn('if args.action == "run":', body)
         self.assertLess(body.find("pipeline(args)"), body.find("isolated(args)"))
         self.assertLess(body.find("isolated(args)"), body.find("agent(args)"))
 
