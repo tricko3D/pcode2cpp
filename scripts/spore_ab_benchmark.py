@@ -223,18 +223,18 @@ def handoff_to_refinement(base, info, arm):
         raise RuntimeError("Recorded pipeline handoff has changed")
     checkout = base / arm / "spore"
     source = checkout / info["target_source"]
-    expected = f"// @ {info['target']['address']}\\n// No implementation yet.\\n"
+    expected = f"// @ {info['target']['address']}\n// No implementation yet.\n"
     if source.read_text(encoding="utf-8") != expected:
         raise RuntimeError(f"Refinement source is not pristine: {source}")
     source.write_bytes(contents)
     feedback = (previous.get("handoff_verification") or {}).get("feedback", "")
     prompt = (
-        f"Target: {info['target']['address']} ({info['target']['retail_bytes']} retail bytes).\\n"
+        f"Target: {info['target']['address']} ({info['target']['retail_bytes']} retail bytes).\n"
         "The target C++ file contains the candidate produced by pcode2cpp. "
         "IMPROVE it toward a VC9 byte-exact MATCH, not equivalence. "
         "Preserve observable semantics, ABI and calls. "
-        "Do not inspect history or retrieve an existing solution.\\n\\n"
-        "Final pipeline compiler and fingerprint feedback:\\n" + feedback
+        "Do not inspect history or retrieve an existing solution.\n\n"
+        "Final pipeline compiler and fingerprint feedback:\n" + feedback
     )
     scratch = checkout / "work/scratch"
     scratch.mkdir(parents=True, exist_ok=True)
