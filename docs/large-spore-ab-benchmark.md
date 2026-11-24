@@ -45,31 +45,31 @@ runner reuses pcode2cpp's Ghidra/prompt/model implementation and Spore's
 authoritative check.py plus C2Scope. It is an experimental adaptation,
 not the unchanged 0x00672CF0 verifier.
 
-## WSL commands
+## Start from scratch on WSL
 
-From ~/pcode2cpp:
+Run this single command from a fresh pcode2cpp checkout:
 
+    cd ~/pcode2cpp
     git pull --ff-only
     python3 -m unittest discover -s tests -p 'test_spore_ab_benchmark.py' -v
-    python3 scripts/select_large_spore.py --min-bytes 768 --max-bytes 1536
-    python3 -u scripts/spore_ab_benchmark.py prepare
+    python3 -u scripts/spore_ab_benchmark.py run
 
-Preparation prints 0xADDRESS and only sets up the selected function,
-Ghidra context, baseline check and experiment directories.
+The `run` action automatically picks an eligible, never-decompiled large
+function; exports its Ghidra evidence; runs pcode2cpp; saves its final C++
+candidate; then compares isolated versus agentic Codex improvement of that
+same candidate; finally saves the token and usage comparison. The selector
+reports its progress so a large source scan is not silent.
 
-Use the address it prints for the next commands, in this order:
+If an environment failure interrupts the run, the experiment retains data
+for completed stages; individual `pipeline`, `isolated`, `agent` and
+`report` actions remain available for inspection/recovery. If the
+pipeline fails to yield a valid compilable candidate, the later stages
+do not run and the report records that failure rather than fabricating
+a result.
 
-    TARGET=0xADDRESS
-    python3 -u scripts/spore_ab_benchmark.py pipeline --address "$TARGET"
-    python3 -u scripts/spore_ab_benchmark.py isolated --address "$TARGET"
-    python3 -u scripts/spore_ab_benchmark.py agent --address "$TARGET"
-    python3 scripts/spore_ab_benchmark.py report --address "$TARGET"
-
-Either refinement refuses to start without the saved pipeline handoff,
-and neither is permitted to see the other refinement's changes.
-The two refinement runs can be executed in either order, although running
-them sequentially and without other Codex sessions improves Plus-usage
-attribution.
+Run sequentially and without another Codex session to minimize allowance
+measurement contamination. The actual Codex rate-limit percentages are
+rounded and may not update on each model request.
 
 ## Output
 
