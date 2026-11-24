@@ -34,28 +34,28 @@ class BenchmarkTests(unittest.TestCase):
             (root / ".venv/bin").mkdir(parents=True)
             (root / ".venv/bin/python").symlink_to(sys.executable)
             (root / "tools/contrib/task.py").write_text(
-                "def never_tried(maximum):\\n"
+                "def never_tried(maximum):\n"
                 "    return [(1530,0x00abcdef,'','',''),"
                 "(1400,0x00abcdee,'','',''),"
                 "(1300,0x00abcded,'','',''),"
                 "(1200,0x00abcdec,'','',''),"
                 "(1100,0x00abcdeb,'','',''),"
                 "(1000,0x00abcdea,'','',''),"
-                "(900,0x00abcde9,'','','')]\\n"
-                "def marked(): return {0x00abcdef}\\n"
+                "(900,0x00abcde9,'','','')]\n"
+                "def marked(): return {0x00abcdef}\n"
             )
             (root / "match").mkdir()
-            (root / "match/shape_only.txt").write_text("00abcdee - foo\\n")
+            (root / "match/shape_only.txt").write_text("00abcdee - foo\n")
             equivalent = root / "match/slices/s00abcded"
             equivalent.mkdir(parents=True)
-            (equivalent / "equivalent.txt").write_text("one two 00abcded\\n")
+            (equivalent / "equivalent.txt").write_text("one two 00abcded\n")
             existing = root / "match/slices/s00abcdeb"
             existing.mkdir(parents=True)
-            (existing / "s00abcdeb.cpp").write_text("already present\\n")
+            (existing / "s00abcdeb.cpp").write_text("already present\n")
             (root / "work").mkdir()
             day = datetime.datetime.now(datetime.timezone.utc).date()
             (root / "work/claims.txt").write_text(
-                f"0x00abcdec #11 someone {day.isoformat()}\\n"
+                f"0x00abcdec #11 someone {day.isoformat()}\n"
             )
             results = S.select(root, 768, 1536)
             self.assertEqual(
