@@ -60,10 +60,10 @@ def select_catalog(full: bool) -> str:
     contents = CATALOG.read_text(encoding="utf-8")
     if full:
         return contents
-    header = "## Highest-priority shortlist for the current 0x00672CF0 near-match"
-    footer = "\n## Full catalog"
+    header = "## Universal diagnostic axes (12 questions)"
+    footer = "\n## Complete cross-toolchain catalog"
     if header not in contents or footer not in contents:
-        raise ValueError("Technique catalog missing shortlist/full sections")
+        raise ValueError("Technique catalog missing general diagnostic axes/catalog sections")
     return contents.split(header, 1)[1].split(footer, 1)[0].strip()
 
 
@@ -174,7 +174,7 @@ def main(argv=None):
     parser.add_argument("--models", type=Path, default=ROOT / "config.model-profiles.json")
     parser.add_argument("--model", default="inkling-mini")
     parser.add_argument("--allow-remote", action="store_true")
-    parser.add_argument("--full-catalog", action="store_true", help="Use the full 79-item technique library")
+    parser.add_argument("--full-catalog", action="store_true", help="Use all 158 general technique entries instead of the universal 12-question shortlist")
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--dry-run", action="store_true", help="Save request only, no model inference")
     args = parser.parse_args(argv)
