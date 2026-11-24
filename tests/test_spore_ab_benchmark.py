@@ -109,6 +109,35 @@ class BenchmarkTests(unittest.TestCase):
                     got = B.verify(checkout, "0x0088abcd", checkout / f"log{i}.txt")
                 self.assertEqual(got["match"], expected)
 
+    def test_incomplete_pipeline_cannot_handoff_to_codex(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            address = "0x0088abcd"
+            relative = "match/slices/s0088abcd/s0088abcd.cpp"
+            payload = b"// @ 0x0088abcd\nint f() { return 42; }\n"
+            handoff = base / "pipeline/handoff.cpp"
+            handoff.parent.mkdir(parents=True)
+            handoff.write_bytes(payload)
+            B.save(base / "pipeline/result.json", {
+                "handoff_sha256": B.sha(payload),
+                "pipeline_complete": False,
+                "c2scope_attempts": 0,
+                "c2scope_completed": 0,
+            })
+            info = {"target": {"address": address, "retail_bytes": 1200},
+                    "target_source": relative}
+            with self.assertRaisesRegex(RuntimeError, "Mechanical matching stage incomplete"):
+                B.handoff_to_refinement(base, info, "isolated")
+
+    def test_c2scope_skip_and_error_are_reported_in_pipeline_source(self):
+        import inspect
+        source = inspect.getsource(B.pipeline)
+        self.assertIn('"c2scope_skipped"', source)
+        self.assertIn('"c2scope_error"', source)
+        self.assertIn("C2Scope FAILED:", source)
+        self.assertIn("pipeline_complete = matched or c2scope_completed > 0", source)
+        self.assertIn("if pipeline_complete and any", source)
+
     def test_shared_pipeline_and_two_refinements_are_recorded(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(B, "BASE", Path(temp)):
@@ -139,6 +168,8 @@ class BenchmarkTests(unittest.TestCase):
             digest = B.sha(payload)
             B.save(base / "pipeline/result.json", {
                 "handoff_sha256": digest,
+                "pipeline_complete": True,
+                "c2scope_completed": 1,
                 "handoff_verification": {"feedback": "NO MATCH: bytes differ"},
             })
             meta = {"target": {"address": address, "retail_bytes": 1200},
