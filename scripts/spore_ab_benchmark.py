@@ -409,14 +409,16 @@ def pipeline(args):
 
 
 def isolated(args):
-    """One independent, inference-only Codex response, with no repair/search calls."""
+    """One tool-free Codex FINAL refinement of the shared pcode2cpp candidate."""
     base, info, checkout, source = load_arm(args.address, "isolated")
     destination = base / "isolated/result.json"
     if destination.exists():
-        raise RuntimeError("Isolated run already recorded; refusing to overwrite")
+        raise RuntimeError("Isolated refinement already recorded")
+    handoff_hash, refinement = handoff_to_refinement(base, info, "isolated")
     profile = load_profile(ROOT / "config.model-profiles.example.json", "codex-plus")
     profile["model"] = MODEL
-    evidence = (base / "evidence.md").read_text()
+    original_cpp = source.read_text(encoding="utf-8")
+    evidence = (base / "evidence.md").read_text(encoding="utf-8")
     address = info["target"]["address"]
     before = snapshot_limits()
     t0 = time.time()
@@ -424,38 +426,41 @@ def isolated(args):
     try:
         response, usage = chat_json(profile, [
             {"role": "system", "content":
-             "You reconstruct native VC9 C++ for a never-decompiled Spore function. "
-             "No compiler, shell, repository, or web tools. Return a JSON object "
-             "with the key body containing a complete compilable .cpp file."},
-            {"role": "user", "content": evidence +
-             "\n\nReturn the complete C++ translation unit. Include a single marker "
-             "line // @ " + address + " immediately before the target function. "
-             "No inline assembly, no placeholders. The goal is BYTE-EXACT MATCH."},
+             "You are the final source-refinement stage of a native C++ "
+             "decompilation pipeline. Improve the supplied candidate rather "
+             "than starting from scratch. No filesystem, shell, compiler, "
+             "web or other tools. Return JSON with the key body containing "
+             "the improved complete VC9-compatible translation unit."},
+            {"role": "user", "content":
+             refinement + "\n\nComplete Ghidra evidence and repository rules:\n" +
+             evidence + "\n\nExact pcode2cpp pipeline candidate:\n" +
+             original_cpp + "\n\nReturn the complete improved C++ with marker // @ " +
+             address + " immediately before the target function."},
         ])
         cpp = response.get("body")
         if not isinstance(cpp, str) or not cpp.strip():
-            raise RuntimeError("Isolated Codex response has no C++ source")
+            raise RuntimeError("Isolated Codex returned no candidate")
         if "// @ " + address not in cpp:
             raise RuntimeError("Isolated candidate missing required address marker")
         if re.search(r"(?im)\b(?:__asm|_asm|asm)\b|__declspec\s*\(\s*naked\s*\)", cpp):
             raise RuntimeError("Isolated candidate uses forbidden assembly")
-        source.write_text(cpp.rstrip() + "\n")
+        source.write_text(cpp.rstrip() + "\n", encoding="utf-8")
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
         failure = str(e)
-    # Verification is outside the model. No model follow-ups for compiler errors.
-    verification = verify(checkout, address, base / "isolated/final-check.log")
+    verdict = verify(checkout, address, base / "isolated/final-check.log")
     after = snapshot_limits()
     save(destination, {
-        "arm": "isolated", "model": MODEL, "match": verification["match"],
-        "verification": verification, "error": failure,
+        "arm": "isolated", "model": MODEL, "match": verdict["match"],
+        "verification": verdict, "error": failure,
+        "starting_source_sha256": handoff_hash,
+        "source_sha256": sha(source.read_bytes()) if source.is_file() else None,
         "total_tokens": (usage.get("usage") or {}),
         "model_calls": [usage] if usage else [],
-        "source_sha256": sha(source.read_bytes()) if source.is_file() else None,
         "seconds": time.time() - t0,
         "allowance_before": before, "allowance_after": after,
         "allowance_change": allowance(before, after),
     })
-    print("Isolated final verification:", "MATCH" if verification["match"] else "NO MATCH")
+    print("Isolated final refinement:", "MATCH" if verdict["match"] else "NO MATCH")
     print("Saved:", destination)
 
 
