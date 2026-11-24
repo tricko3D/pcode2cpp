@@ -675,7 +675,7 @@ def main():
     p.add_argument("--sweep-limit", type=int, default=64)
     p.add_argument("--workers", type=int, default=16)
     args = p.parse_args()
-    if args.action != "prepare" and not args.address:
+    if args.action in ("pipeline", "isolated", "agent", "report") and not args.address:
         p.error("--address is required for pipeline, isolated, agent and report")
     if args.rounds < 1 or args.sweep_limit < 0 or args.workers < 1:
         p.error("Invalid budgets")
