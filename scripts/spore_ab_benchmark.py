@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -129,70 +130,75 @@ def prepare(args):
     if base.exists():
         raise RuntimeError(f"Experiment exists: {base}; refusing to overwrite")
     base.mkdir(parents=True)
-    # Git archive always uses committed HEAD, never uncommitted working-tree
-    # sources. Warn but do not block contributors with unrelated local edits.
-    dirty = command(["git", "status", "--porcelain", "--untracked-files=no"], cwd=spore)
-    if dirty.returncode:
-        raise RuntimeError("Cannot inspect Spore source state: " + dirty.stderr[-1000:])
-    if dirty.stdout.strip():
-        print("Note: ignored uncommitted Spore edits; both arms archive HEAD.", flush=True)
-    settings = read(ROOT / "config.json")
-    print(f"Exporting original Ghidra evidence for {address} ({selected['retail_bytes']} bytes)", flush=True)
-    ctx_file = base / "context.json"
-    ctx = export_function(int(address, 16), ctx_file, settings["ghidra"])
-    callees, missing = BP.read_direct_callees(ctx, ROOT / "data/retail-contexts")
-    evidence = BP.render_prompt(ctx, "Reconstruct the retail Spore function from the evidence.",
-                                callees, missing)
-    rules = (spore / "AGENTS.md").read_text(encoding="utf-8")
-    common = (
-        f"Target function: {address}. Retail size: {selected['retail_bytes']} bytes.\n"
-        "Goal: an exact VC9 byte match, not only equivalent behavior.\n"
-        "The target has no implementation in this source snapshot.\n"
-        "Do not search history, retrieve upstream solutions, or copy known matching code.\n\n"
-        "Full repository instructions:\n" + rules +
-        "\n\nComplete original Ghidra context:\n" + evidence
-    )
-    (base / "evidence.md").write_text(common, encoding="utf-8")
-    commit = command(["git", "rev-parse", "HEAD"], cwd=spore)
-    if commit.returncode:
-        raise RuntimeError(commit.stderr)
-    relpath = f"match/slices/s{int(address,16):08x}/s{int(address,16):08x}.cpp"
-    for arm in ("pipeline", "isolated", "agent"):
-        target_dir = base / arm / "spore"
-        target_dir.parent.mkdir(parents=True)
-        checkout_archive(spore, target_dir)
-        target_file = target_dir / relpath
-        if target_file.exists():
-            raise RuntimeError(f"Target file unexpectedly exists: {target_file}")
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        target_file.write_text(f"// @ {address}\n// No implementation yet.\n")
-        scratch = target_dir / "work/scratch"
-        scratch.mkdir(parents=True, exist_ok=True)
-        (scratch / "evidence.md").write_text(common, encoding="utf-8")
-        # Negative control: prior to either arm, the blank target MUST NOT match.
-        baseline = verify(target_dir, address, target_dir.parent / "baseline_check.log")
-        if baseline["match"]:
-            raise RuntimeError(f"Pre-run baseline unexpectedly matches: {target_dir}")
-        save(target_dir.parent / "baseline_check.json", baseline)
-    info = {
-        "target": selected,
-        "model": MODEL,
-        "baseline_commit": commit.stdout.strip(),
-        "source_worktree_had_uncommitted_edits": bool(dirty.stdout.strip()),
-        "context_sha256": sha(ctx_file.read_bytes()),
-        "evidence_sha256": sha(common.encode("utf-8")),
-        "target_source": relpath,
-        "setup_date_unix": time.time(),
-        "arms": ["pipeline", "isolated", "agent"],
-        "tool_free_rounds": args.rounds,
-        "c2scope_limit": args.sweep_limit,
-        "wall_time_budget_seconds_per_arm": TIME_BUDGET,
-    }
-    save(base / "experiment.json", info)
-    print(f"Selected {address}, {selected['retail_bytes']} bytes")
-    print("Evidence and baseline saved:", base)
-    print("No agent or model has been run yet.")
+    try:
+        # Git archive always uses committed HEAD, never uncommitted working-tree
+        # sources. Warn but do not block contributors with unrelated local edits.
+        dirty = command(["git", "status", "--porcelain", "--untracked-files=no"], cwd=spore)
+        if dirty.returncode:
+            raise RuntimeError("Cannot inspect Spore source state: " + dirty.stderr[-1000:])
+        if dirty.stdout.strip():
+            print("Note: ignored uncommitted Spore edits; both arms archive HEAD.", flush=True)
+        settings = read(ROOT / "config.json")
+        print(f"Exporting original Ghidra evidence for {address} ({selected['retail_bytes']} bytes)", flush=True)
+        ctx_file = base / "context.json"
+        ctx = export_function(int(address, 16), ctx_file, settings["ghidra"])
+        callees, missing = BP.read_direct_callees(ctx, ROOT / "data/retail-contexts")
+        evidence = BP.render_prompt(ctx, "Reconstruct the retail Spore function from the evidence.",
+                                    callees, missing)
+        rules = (spore / "AGENTS.md").read_text(encoding="utf-8")
+        common = (
+            f"Target function: {address}. Retail size: {selected['retail_bytes']} bytes.\n"
+            "Goal: an exact VC9 byte match, not only equivalent behavior.\n"
+            "The target has no implementation in this source snapshot.\n"
+            "Do not search history, retrieve upstream solutions, or copy known matching code.\n\n"
+            "Full repository instructions:\n" + rules +
+            "\n\nComplete original Ghidra context:\n" + evidence
+        )
+        (base / "evidence.md").write_text(common, encoding="utf-8")
+        commit = command(["git", "rev-parse", "HEAD"], cwd=spore)
+        if commit.returncode:
+            raise RuntimeError(commit.stderr)
+        relpath = f"match/slices/s{int(address,16):08x}/s{int(address,16):08x}.cpp"
+        for arm in ("pipeline", "isolated", "agent"):
+            target_dir = base / arm / "spore"
+            target_dir.parent.mkdir(parents=True)
+            checkout_archive(spore, target_dir)
+            target_file = target_dir / relpath
+            if target_file.exists():
+                raise RuntimeError(f"Target file unexpectedly exists: {target_file}")
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            target_file.write_text(f"// @ {address}\n// No implementation yet.\n")
+            scratch = target_dir / "work/scratch"
+            scratch.mkdir(parents=True, exist_ok=True)
+            (scratch / "evidence.md").write_text(common, encoding="utf-8")
+            # Negative control: prior to either arm, the blank target MUST NOT match.
+            baseline = verify(target_dir, address, target_dir.parent / "baseline_check.log")
+            if baseline["match"]:
+                raise RuntimeError(f"Pre-run baseline unexpectedly matches: {target_dir}")
+            save(target_dir.parent / "baseline_check.json", baseline)
+        info = {
+            "target": selected,
+            "model": MODEL,
+            "baseline_commit": commit.stdout.strip(),
+            "source_worktree_had_uncommitted_edits": bool(dirty.stdout.strip()),
+            "context_sha256": sha(ctx_file.read_bytes()),
+            "evidence_sha256": sha(common.encode("utf-8")),
+            "target_source": relpath,
+            "setup_date_unix": time.time(),
+            "arms": ["pipeline", "isolated", "agent"],
+            "tool_free_rounds": args.rounds,
+            "c2scope_limit": args.sweep_limit,
+            "wall_time_budget_seconds_per_arm": TIME_BUDGET,
+        }
+        save(base / "experiment.json", info)
+        print(f"Selected {address}, {selected['retail_bytes']} bytes")
+        print("Evidence and baseline saved:", base)
+        print("No agent or model has been run yet.")
 
+    except Exception:
+        # A failed Ghidra export or checkout setup must not poison the target.
+        shutil.rmtree(base, ignore_errors=True)
+        raise
 
 def load_arm(address, arm):
     base = experiment_dir(address)
