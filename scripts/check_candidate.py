@@ -12,26 +12,13 @@ import shutil
 import subprocess
 import tempfile
 
-# The fixed probe prefix includes <cstdint>. Cross-target Clang running on
-# Linux often cannot find the Windows C++ standard library. Provide only the
-# fixed-width integer aliases needed by this standalone probe; do not silently
-# substitute a whole standard library or modify the candidate itself.
-CSTDINT_SHIM = """#pragma once
-using int8_t = signed char;
-using uint8_t = unsigned char;
-using int16_t = short;
-using uint16_t = unsigned short;
-using int32_t = int;
-using uint32_t = unsigned int;
-using int64_t = long long;
-using uint64_t = unsigned long long;
-namespace std {
-    using ::int8_t; using ::uint8_t;
-    using ::int16_t; using ::uint16_t;
-    using ::int32_t; using ::uint32_t;
-    using ::int64_t; using ::uint64_t;
-}
-"""
+# The test-target compatibility header and VC9 wrapper share these exact aliases.
+try:
+    from .fixed_width_types import CPP_FIXED_WIDTH_TYPES
+except ImportError:
+    from fixed_width_types import CPP_FIXED_WIDTH_TYPES
+
+CSTDINT_SHIM = "#pragma once\n" + CPP_FIXED_WIDTH_TYPES
 
 
 @dataclass(frozen=True)
