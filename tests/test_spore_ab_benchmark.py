@@ -23,10 +23,10 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn("T.new_source_path", S.SELECTOR)
 
     def test_single_run_action_is_supported(self):
-        self.assertIn("run", B.main.__code__.co_consts or ())
         # The runner must execute the shared pipeline before its refinements.
         import inspect
         body = inspect.getsource(B.main)
+        self.assertIn('if args.action == "run":', body)
         self.assertLess(body.find("pipeline(args)"), body.find("isolated(args)"))
         self.assertLess(body.find("isolated(args)"), body.find("agent(args)"))
 
