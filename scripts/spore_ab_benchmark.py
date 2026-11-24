@@ -129,6 +129,9 @@ def prepare(args):
     if base.exists():
         raise RuntimeError(f"Experiment exists: {base}; refusing to overwrite")
     base.mkdir(parents=True)
+    dirty = command(["git", "status", "--porcelain", "--untracked-files=no"], cwd=spore)
+    if dirty.returncode or dirty.stdout.strip():
+        raise RuntimeError("Spore tracked working tree must be clean to reproduce the archived baseline")
     settings = read(ROOT / "config.json")
     print(f"Exporting original Ghidra evidence for {address} ({selected['retail_bytes']} bytes)", flush=True)
     ctx_file = base / "context.json"
@@ -162,6 +165,11 @@ def prepare(args):
         scratch = target_dir / "work/scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         (scratch / "evidence.md").write_text(common, encoding="utf-8")
+        # Negative control: prior to either arm, the blank target MUST NOT match.
+        baseline = verify(target_dir, address, target_dir.parent / "baseline_check.log")
+        if baseline["match"]:
+            raise RuntimeError(f"Pre-run baseline unexpectedly matches: {target_dir}")
+        save(target_dir.parent / "baseline_check.json", baseline)
     info = {
         "target": selected,
         "model": MODEL,
@@ -228,7 +236,8 @@ def mechanical(checkout, address, source, symbol, folder, workers, limit):
         "--func", symbol, "--asm-vs", str(asm),
         "--families", A.DEFAULT_FAMILIES, "--jobs", str(workers),
         "--limit", str(limit), "--max-combo", "2", "--verify", "8",
-        "--c2", "15.00", "--", "/O2", "/MD", "/Gy", "/EHsc", "/TP"
+        "--c2", "15.00", "--", "/O2", "/MD", "/Gy", "/EHsc", "/TP",
+        "/I" + str(checkout / "src/game/include")
     ]
     env = os.environ.copy()
     env["C2TRACE_REMOTE"] = "0"
@@ -259,8 +268,10 @@ def pipeline(args):
     feedback = ""
     try:
         for n in range(args.rounds):
-            if time.time() - t0 > TIME_BUDGET:
+            remaining = TIME_BUDGET - (time.time() - t0)
+            if remaining <= 0:
                 break
+            profile["timeout_seconds"] = max(1, min(1800, int(remaining)))
             if n == 0:
                 system = ("Reconstruct a complete valid Visual C++ 2008 C++ translation unit "
                           "using Ghidra evidence. Return JSON with one body string containing "
