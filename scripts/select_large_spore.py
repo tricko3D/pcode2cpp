@@ -14,28 +14,108 @@ import sys
 
 
 SELECTOR = r'''
-import json, os, sys, time
+import datetime
+import glob
+import json
+import os
+import sys
+import time
+import urllib.request
+
 root = os.path.abspath(".")
 sys.path[:0] = [root + "/tools/contrib", root + "/tools/matching",
                 root + "/tools/difftest", root + "/tools/ci"]
 import task as T
 
 minimum, maximum = map(int, sys.argv[1:3])
-start = time.monotonic()
+started = time.monotonic()
+
 def stage(label):
-    print(f"[selection +{time.monotonic()-start:.1f}s] {label}", file=sys.stderr, flush=True)
+    print(f"[selection +{time.monotonic()-started:.1f}s] {label}",
+          file=sys.stderr, flush=True)
+
+def read_shapes():
+    # Older spore-decomp task.py versions lack shape_only().
+    result = set()
+    path = os.path.join(root, "match/shape_only.txt")
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as lines:
+            for line in lines:
+                parts = line.split("#", 1)[0].split()
+                if parts:
+                    try:
+                        result.add(int(parts[0], 16))
+                    except ValueError:
+                        continue
+    return result
+
+def read_equivalent():
+    # Older task.py versions may lack equivalent().
+    result = set()
+    for pattern in ("match/slices/*/equivalent.txt",
+                    "src/game/**/equivalent.txt"):
+        for filename in glob.glob(os.path.join(root, pattern), recursive=True):
+            with open(filename, encoding="utf-8", errors="replace") as lines:
+                for line in lines:
+                    parts = line.split("#", 1)[0].split()
+                    if len(parts) >= 3:
+                        try:
+                            result.add(int(parts[2], 16))
+                        except ValueError:
+                            continue
+    return result
+
+def read_claims():
+    # No dependency on task.py's changing claims() implementation.
+    # Use a fresh-enough local claims cache when present; otherwise fetch
+    # the upstream claims index once, with a short timeout.
+    cache = os.path.join(root, "work/claims.txt")
+    url = "https://raw.githubusercontent.com/NoahBPeterson/spore-decomp/claims/claims.txt"
+    raw = None
+    if os.path.isfile(cache) and time.time() - os.path.getmtime(cache) < 600:
+        with open(cache, encoding="utf-8") as f:
+            raw = f.read()
+    if raw is None:
+        try:
+            with urllib.request.urlopen(url, timeout=8) as response:
+                raw = response.read().decode("utf-8", "replace")
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            with open(cache, "w", encoding="utf-8") as f:
+                f.write(raw)
+        except Exception:
+            if os.path.isfile(cache):
+                with open(cache, encoding="utf-8") as f:
+                    raw = f.read()
+    if raw is None:
+        raise RuntimeError("Cannot check upstream claims, and there is no local cache")
+    active = set()
+    cutoff = datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=7)
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or not parts[0].lower().startswith("0x") or not parts[1].startswith("#"):
+            continue
+        try:
+            va = int(parts[0], 16)
+            modified = datetime.date.fromisoformat(parts[3][:10])
+        except ValueError:
+            # Unknown timestamp: treat the claim as active, not safe to take.
+            active.add(va)
+            continue
+        if modified >= cutoff:
+            active.add(va)
+    return active
+
 stage("Reading retail fingerprints, manifests and unstarted work")
 candidates = T.never_tried(maximum)
 stage(f"Candidate inventory loaded ({len(candidates)} functions)")
 marked = T.marked()
 stage("Checked existing source definitions")
-shapes = T.shape_only()
-equivalent = T.equivalent()
+shapes = read_shapes()
+equivalent = read_equivalent()
 stage("Checked matching-shape and equivalent records")
-claims = T.claims()
+claims = read_claims()
 stage("Checked active claims")
-if claims is None:
-    raise SystemExit("No live claims list; aborting instead of risking an active claim")
+
 valid = [
     {"address": "0x%08x" % address, "retail_bytes": size}
     for size, address, *_ in candidates
@@ -43,10 +123,12 @@ valid = [
     and address not in marked
     and address not in shapes
     and address not in equivalent
-    and not os.path.exists(T.new_source_path(address))
-    and not any(not T.stale(claim) for claim in claims.get(address, []))
+    and not os.path.isfile(
+        "match/slices/s%08x/s%08x.cpp" % (address, address))
+    and address not in claims
 ]
 valid.sort(key=lambda x: (-x["retail_bytes"], x["address"]))
+stage(f"Selected {len(valid)} eligible functions")
 print("BENCHMARK_SELECTION_JSON=" + json.dumps(valid[:20]))
 '''
 
