@@ -153,7 +153,7 @@ def prepare(args):
     if commit.returncode:
         raise RuntimeError(commit.stderr)
     relpath = f"match/slices/s{int(address,16):08x}/s{int(address,16):08x}.cpp"
-    for arm in ("pipeline", "agent"):
+    for arm in ("pipeline", "isolated", "agent"):
         target_dir = base / arm / "spore"
         target_dir.parent.mkdir(parents=True)
         checkout_archive(spore, target_dir)
@@ -178,7 +178,7 @@ def prepare(args):
         "evidence_sha256": sha(common.encode("utf-8")),
         "target_source": relpath,
         "setup_date_unix": time.time(),
-        "arms": ["pipeline", "agent"],
+        "arms": ["pipeline", "isolated", "agent"],
         "tool_free_rounds": args.rounds,
         "c2scope_limit": args.sweep_limit,
         "wall_time_budget_seconds_per_arm": TIME_BUDGET,
@@ -346,6 +346,57 @@ def pipeline(args):
     print("Saved:", destination)
 
 
+def isolated(args):
+    """One independent, inference-only Codex response, with no repair/search calls."""
+    base, info, checkout, source = load_arm(args.address, "isolated")
+    destination = base / "isolated/result.json"
+    if destination.exists():
+        raise RuntimeError("Isolated run already recorded; refusing to overwrite")
+    profile = load_profile(ROOT / "config.model-profiles.example.json", "codex-plus")
+    profile["model"] = MODEL
+    evidence = (base / "evidence.md").read_text()
+    address = info["target"]["address"]
+    before = snapshot_limits()
+    t0 = time.time()
+    failure, usage = None, {}
+    try:
+        response, usage = chat_json(profile, [
+            {"role": "system", "content":
+             "You reconstruct native VC9 C++ for a never-decompiled Spore function. "
+             "No compiler, shell, repository, or web tools. Return a JSON object "
+             "with the key body containing a complete compilable .cpp file."},
+            {"role": "user", "content": evidence +
+             "\n\nReturn the complete C++ translation unit. Include a single marker "
+             "line // @ " + address + " immediately before the target function. "
+             "No inline assembly, no placeholders. The goal is BYTE-EXACT MATCH."},
+        ])
+        cpp = response.get("body")
+        if not isinstance(cpp, str) or not cpp.strip():
+            raise RuntimeError("Isolated Codex response has no C++ source")
+        if "// @ " + address not in cpp:
+            raise RuntimeError("Isolated candidate missing required address marker")
+        if re.search(r"(?im)\b(?:__asm|_asm|asm)\b|__declspec\s*\(\s*naked\s*\)", cpp):
+            raise RuntimeError("Isolated candidate uses forbidden assembly")
+        source.write_text(cpp.rstrip() + "\n")
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
+        failure = str(e)
+    # Verification is outside the model. No model follow-ups for compiler errors.
+    verification = verify(checkout, address, base / "isolated/final-check.log")
+    after = snapshot_limits()
+    save(destination, {
+        "arm": "isolated", "model": MODEL, "match": verification["match"],
+        "verification": verification, "error": failure,
+        "total_tokens": (usage.get("usage") or {}),
+        "model_calls": [usage] if usage else [],
+        "source_sha256": sha(source.read_bytes()),
+        "seconds": time.time() - t0,
+        "allowance_before": before, "allowance_after": after,
+        "allowance_change": allowance(before, after),
+    })
+    print("Isolated final verification:", "MATCH" if verification["match"] else "NO MATCH")
+    print("Saved:", destination)
+
+
 def agent(args):
     base, info, checkout, source = load_arm(args.address, "agent")
     destination = base / "agent/result.json"
@@ -414,7 +465,7 @@ def report(args):
         "evidence_sha256": info["evidence_sha256"],
         "arms": {},
     }
-    for arm in ("pipeline", "agent"):
+    for arm in ("pipeline", "isolated", "agent"):
         file = base / arm / "result.json"
         comparison["arms"][arm] = read(file) if file.is_file() else {"status": "not run"}
     save(base / "comparison.json", comparison)
@@ -430,7 +481,7 @@ def report(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("action", choices=("prepare", "pipeline", "agent", "report"))
+    p.add_argument("action", choices=("prepare", "pipeline", "isolated", "agent", "report"))
     p.add_argument("--address", help="0x... address; optional only for prepare")
     p.add_argument("--spore", type=Path, default=Path.home() / "spore-decomp")
     p.add_argument("--min-bytes", type=int, default=768)
@@ -440,11 +491,11 @@ def main():
     p.add_argument("--workers", type=int, default=16)
     args = p.parse_args()
     if args.action != "prepare" and not args.address:
-        p.error("--address is required for pipeline, agent and report")
+        p.error("--address is required for pipeline, isolated, agent and report")
     if args.rounds < 1 or args.sweep_limit < 0 or args.workers < 1:
         p.error("Invalid budgets")
     try:
-        {"prepare": prepare, "pipeline": pipeline, "agent": agent,
+        {"prepare": prepare, "pipeline": pipeline, "isolated": isolated, "agent": agent,
          "report": report}[args.action](args)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
