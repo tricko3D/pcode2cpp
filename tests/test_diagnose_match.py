@@ -60,11 +60,22 @@ class DiagnosisTests(unittest.TestCase):
     def test_catalog_shortlist_is_smaller_than_full(self):
         with tempfile.TemporaryDirectory() as t:
             path = Path(t) / "cat.md"
-            path.write_text("## Highest-priority shortlist for the current 0x00672CF0 near-match\n"
-                            "important\n## Full catalog\nlong catalog\n")
+            path.write_text("## Universal diagnostic axes (12 questions)\n"
+                            "general questions\n## Complete cross-toolchain catalog\nlong catalog\n")
             with patch.object(D, "CATALOG", path):
-                self.assertEqual(D.select_catalog(False), "important")
+                self.assertEqual(D.select_catalog(False), "general questions")
                 self.assertIn("long catalog", D.select_catalog(True))
+
+    def test_catalog_has_no_case_specific_facts(self):
+        catalog = D.CATALOG.read_text(encoding="utf-8").lower()
+        for forbidden in ("spore", "0x00672cf0", "v0037", "rdiff=1",
+                          "best established source", "vc9 15.00"):
+            self.assertNotIn(forbidden, catalog)
+        self.assertIn("## Universal diagnostic axes", catalog)
+        entries = [line for line in catalog.splitlines()
+                   if line.lstrip().split(".", 1)[0].isdigit()
+                   and "[" in line and "]" in line]
+        self.assertGreaterEqual(len(entries), 100)
 
     def test_diagnosis_answer_forbids_patch_keys(self):
         answer = {"observed_difference":"one move",
