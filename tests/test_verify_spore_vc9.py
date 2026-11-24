@@ -3,6 +3,8 @@ import unittest
 
 from scripts.probe_body import PREFIX
 from scripts.verify_spore_vc9 import candidate_body, render_vc9_source
+from scripts.check_candidate import CSTDINT_SHIM
+from scripts.fixed_width_types import CPP_FIXED_WIDTH_TYPES
 
 
 REPAIRED_BODY = (
@@ -27,6 +29,18 @@ class Vc9WrapperTests(unittest.TestCase):
         self.assertIn("param_1[0x15] = param_2[0x15];", cpp)
         self.assertNotIn("#include <cstdint>", cpp)
         self.assertIn("return param_1;", cpp)
+
+    def test_clang_and_vc9_support_same_std_uint32_t_spelling(self):
+        body = REPAIRED_BODY.replace(
+            "(int)(param_1 + 5)", "(int)(std::uint32_t)(param_1 + 5)", 1
+        )
+        cpp = render_vc9_source(PREFIX + body + "\n}\n")
+        self.assertIn("namespace std {", cpp)
+        self.assertIn("typedef unsigned int uint32_t;", cpp)
+        self.assertIn("typedef ::uint32_t uint32_t;", cpp)
+        self.assertIn("std::uint32_t", cpp)
+        self.assertIn(CPP_FIXED_WIDTH_TYPES, cpp)
+        self.assertIn(CPP_FIXED_WIDTH_TYPES, CSTDINT_SHIM)
 
     def test_rejects_other_signatures_or_mismatched_callee(self):
         with self.assertRaises(ValueError):
