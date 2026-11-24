@@ -126,7 +126,14 @@ def prepare(args):
         if selected is None:
             raise RuntimeError("Address is not among verified unimplemented candidates")
     else:
-        selected = candidates[0]
+        available = [c for c in candidates if not experiment_dir(c["address"]).exists()]
+        if not available:
+            raise RuntimeError("All eligible function cases already have experiment directories. "
+                               "Archive an existing case before rerunning that function.")
+        selected = available[0]
+        if selected != candidates[0]:
+            print("Preserving previous experiment data; selecting next untested function: "
+                  + selected["address"], flush=True)
     address = selected["address"]
     base = experiment_dir(address)
     if base.exists():
