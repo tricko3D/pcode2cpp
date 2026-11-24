@@ -129,9 +129,13 @@ def prepare(args):
     if base.exists():
         raise RuntimeError(f"Experiment exists: {base}; refusing to overwrite")
     base.mkdir(parents=True)
+    # Git archive always uses committed HEAD, never uncommitted working-tree
+    # sources. Warn but do not block contributors with unrelated local edits.
     dirty = command(["git", "status", "--porcelain", "--untracked-files=no"], cwd=spore)
-    if dirty.returncode or dirty.stdout.strip():
-        raise RuntimeError("Spore tracked working tree must be clean to reproduce the archived baseline")
+    if dirty.returncode:
+        raise RuntimeError("Cannot inspect Spore source state: " + dirty.stderr[-1000:])
+    if dirty.stdout.strip():
+        print("Note: ignored uncommitted Spore edits; both arms archive HEAD.", flush=True)
     settings = read(ROOT / "config.json")
     print(f"Exporting original Ghidra evidence for {address} ({selected['retail_bytes']} bytes)", flush=True)
     ctx_file = base / "context.json"
@@ -174,6 +178,7 @@ def prepare(args):
         "target": selected,
         "model": MODEL,
         "baseline_commit": commit.stdout.strip(),
+        "source_worktree_had_uncommitted_edits": bool(dirty.stdout.strip()),
         "context_sha256": sha(ctx_file.read_bytes()),
         "evidence_sha256": sha(common.encode("utf-8")),
         "target_source": relpath,
