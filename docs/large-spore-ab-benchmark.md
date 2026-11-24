@@ -1,99 +1,97 @@
-# Large, never-decompiled Spore function benchmark
+# Spore: shared pcode2cpp pipeline, then two Codex refinement approaches
 
-This experiment compares three distinct approaches on one previously unimplemented
-retail function. It does not delete or alter any tracked Spore implementation.
+This benchmark is a TWO-WAY comparison of how to improve the output of the
+SAME pcode2cpp pipeline. Isolated Codex is the last step of the pipeline,
+not a separate reconstruction from Ghidra. Agentic Codex is the alternative
+last step, starting from precisely the same pipeline candidate.
 
-## Fair comparison controls
+## Benchmark design
 
-- Select the largest unclaimed function in the 768–1536 byte interval that
-  has no implementation, no source marker, no note, no equivalent proof,
-  no library implementation, and no matching-shape shortcut.
-- All three runs use exactly the same clean Spore Git commit. Each gets an
-  independent extracted copy, initially containing only the address marker.
-  Preparation runs an external negative-control check before any model calls.
-- All use GPT-6.2 Sol. They receive the same AGENTS.md instructions and
-  Ghidra evidence, saved with SHA-256 checksums.
-- Objective is Spore's actual VC9 byte-exact MATCH, not EQUIVALENT.
-- The difference is method: (1) pcode2cpp model calls, compiler feedback
-  and bounded C2Scope rewrites; (2) one isolated, tool-free inference
-  with independent verification; (3) Codex free to use repository/compiler tools.
-- Both exploratory arms have a nominal two-hour cap. The isolated arm has
-  one model call and no iterative repair. The pipeline defaults to four
-  model rounds and C2Scope sweeps bounded to 64 variants each.
-  Different numbers of model/tool calls are a *measured outcome*, not held fixed.
-- Model token counts and approximate 5-hour/weekly Plus allowance deltas
-  are stored in each arm's result.json. Rate limits may be rounded or reset
-  mid-run and other simultaneous Codex activity would contaminate the deltas.
-- Check.py's verified MATCH result is the success criterion. A valid
-  EQUIVALENT result is NOT a success for this comparison.
+1. Select one genuinely unimplemented, unclaimed 768–1536-byte function
+   using Spore's own task.py. Exclude existing definitions, notes,
+   equivalents, library functions and matching-shape shortcuts.
+2. Export its Ghidra analysis once, preserve it, and archive the exact same
+   upstream Spore Git commit into three independent working directories.
+   All three start with no function implementation. Before any inference,
+   check.py verifies the function is not already a match.
+3. Run the experimental generalized pcode2cpp pipeline using GPT-6.2 Sol,
+   Ghidra decompiled C, full High P-code, x86 assembly, VC9 compiler feedback
+   and bounded C2Scope rewriting. It saves the best compiler-valid source
+   found at pipeline/handoff.cpp and a SHA-256 identity.
+4. FINAL OPTION A, isolated Codex: install that exact handoff candidate,
+   send the existing source, Ghidra evidence, repository AGENTS.md and last
+   VC9 feedback to Codex with no model tools, and allow ONE source refinement.
+   Independently compile and fingerprint the result.
+5. FINAL OPTION B, normal Codex agent: install the IDENTICAL handoff,
+   supply the same Ghidra evidence and instructions, allow Codex to use
+   repository/compiler tools and iterate. Independently verify the result.
+6. Compare pipeline + isolated versus pipeline + agentic, using the common
+   pipeline cost once, plus each final-refinement cost separately.
 
-The existing scripts/run_pipeline.py, its Unicorn/angr adapters, and its
-VC9 test wrapper are hard-coded to 0x00672CF0. This new harness is the
-generalized *experimental* path using the same pcode2cpp Ghidra/prompt/model
-components, Spore's authoritative check.py, and C2Scope. Do not describe its
-output as the result of the older address-specific run_pipeline.py.
+**Success means BYTE-EXACT MATCH from Spore's VC9 fingerprint check.**
+Equivalent is not a match. The report rejects an apples-to-apples claim
+unless both refinement arms' starting source SHA-256 values equal the
+pipeline handoff SHA-256.
 
-## Local WSL commands
+All runs use the exact model gpt-6.2-sol. The pipeline's reconstruction and
+C2Scope budget is not duplicated. Model-call counts, allowed tools and source
+rewrite strategies differ deliberately, and are experimental variables.
+The isolated option is only one model call, while the agent is iterative.
+The experiment does not infer identical wall time or token budget from this.
 
-Run from ~/pcode2cpp after updating the repository:
+The existing scripts/run_pipeline.py and its Unicorn/angr verification
+adapters currently work only for 0x00672CF0. The generalized benchmark
+runner reuses pcode2cpp's Ghidra/prompt/model implementation and Spore's
+authoritative check.py plus C2Scope. It is an experimental adaptation,
+not the unchanged 0x00672CF0 verifier.
+
+## WSL commands
+
+From ~/pcode2cpp:
 
     git pull --ff-only
+    python3 -m unittest discover -s tests -p 'test_spore_ab_benchmark.py' -v
     python3 scripts/select_large_spore.py --min-bytes 768 --max-bytes 1536
     python3 -u scripts/spore_ab_benchmark.py prepare
 
-Prepare prints the chosen 0xADDRESS. It exports the complete Ghidra
-context from the local project and creates three independent Spore checkouts
-under cases/spore-ab/ADDRESS. The benchmark refuses an existing experiment
-directory rather than overwriting earlier measurements.
+Preparation prints 0xADDRESS and only sets up the selected function,
+Ghidra context, baseline check and experiment directories.
 
-Replace ADDRESS with the printed 0x... address:
+Use the address it prints for the next commands, in this order:
 
-    python3 -u scripts/spore_ab_benchmark.py pipeline --address ADDRESS
-    python3 -u scripts/spore_ab_benchmark.py isolated --address ADDRESS
-    python3 -u scripts/spore_ab_benchmark.py agent --address ADDRESS
-    python3 scripts/spore_ab_benchmark.py report --address ADDRESS
+    TARGET=0xADDRESS
+    python3 -u scripts/spore_ab_benchmark.py pipeline --address "$TARGET"
+    python3 -u scripts/spore_ab_benchmark.py isolated --address "$TARGET"
+    python3 -u scripts/spore_ab_benchmark.py agent --address "$TARGET"
+    python3 scripts/spore_ab_benchmark.py report --address "$TARGET"
 
-For a strict one-shot-versus-agent comparison, run the isolated arm
-immediately before the agent, with no concurrent Codex sessions. Run the
-pipeline first so it receives no solutions produced by the agent.
-The pipeline and agent consume separate checkouts; no candidate source
-is copied from one arm to another.
+Either refinement refuses to start without the saved pipeline handoff,
+and neither is permitted to see the other refinement's changes.
+The two refinement runs can be executed in either order, although running
+them sequentially and without other Codex sessions improves Plus-usage
+attribution.
 
-## Artifacts
+## Output
 
-    cases/spore-ab/ADDRESS/
-      experiment.json                 chosen VA, size, source SHA, model
-      context.json                    original Ghidra export
-      evidence.md                     common evidence and AGENTS.md rules
-      pipeline/baseline_check.json    pre-run negative control
-      pipeline/logs/                  source candidates, VC9 logs, C2Scope logs
-      pipeline/result.json            model tokens, checks, allowance snapshots
-      isolated/baseline_check.json    pre-run negative control
-      isolated/final-check.log        independent VC9/fingerprint check
-      isolated/result.json            one inference's tokens and allowance
-      agent/baseline_check.json       pre-run negative control
-      agent/codex.jsonl               Codex's tool/event/token trace
-      agent/final-check.log           independent VC9/fingerprint check
-      agent/result.json               tokens, tools and allowance
-      comparison.json                 combined structured record
+Under cases/spore-ab/ADDRESS/:
 
-The cases/ directory is ignored by Git. Do not commit game binaries,
-raw Ghidra content, toolchains or the full agent transcript. If sharing
-results, use the sanitized summary fields from comparison.json.
+- experiment.json: function identity, retail size, baseline commit and hashes
+- context.json and evidence.md: shared Ghidra evidence and instructions
+- pipeline/logs/: reconstruction candidates, compiler logs, C2Scope sweeps
+- pipeline/handoff.cpp: the EXACT source both refinements must begin with
+- pipeline/result.json: shared pipeline model tokens and Plus-allowance readings
+- isolated/result.json and isolated/final-check.log: final inference and verifier
+- agent/result.json, agent/codex.jsonl, agent/final-check.log: final agent costs,
+  tool activity, compiler verification
+- comparison.json and comparison.md: **two** end-to-end approaches with shared
+  pipeline cost, marginal refinement cost, cached and uncached tokens,
+  5-hour and weekly rounded allowance readings and matching-source checks
 
-## Execution and safety limits
+The cases/ directory is gitignored; do not commit the retail binary,
+analysis image, Ghidra JSON or private Codex session transcript.
 
-The benchmark runs on the local machine, not through GitHub. Your local
-Ghidra project, Spore executable analysis image, installed Microsoft
-compiler, Wine, C2Scope and authenticated Codex CLI must be available.
-
-The agent runs with Codex's danger-full-access sandbox option because the
-previous restricted run blocked Wine socket binding. That grants it broad
-filesystem access. For isolation beyond separate *source* trees, use a
-dedicated WSL distribution/VM. The local work/toolchain reference remains
-linked to the existing Spore installation.
-
-If Ghidra cannot export, the generated source is un-compilable, or
-C2Scope does not support the function's control flow, retain the error in
-the record rather than silently claiming completion. Check source
-identity and the independent final check before interpreting an exact match.
+Codex agent mode currently uses --sandbox danger-full-access to permit
+Wine to bind sockets, because restricted sandboxing blocked it in the
+previous experiment. Work with an expendable WSL distro or VM if stronger
+host isolation is needed. The separate working copies preserve source
+results but do not constitute OS-level sandboxing.
